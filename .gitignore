@@ -21,3 +21,6 @@ npm-debug.log*
 .idea
 .vscode/*
 !.vscode/extensions.json
+
+# Local benchmark / verification harnesses (not part of the package)
+scratch/

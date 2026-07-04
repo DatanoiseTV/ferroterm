@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-07-04
+
+### Performance
+- **WebGL: zero per-quad allocation.** `_quad` previously built a six-element
+  `corners` array (each a four-element sub-array) for every quad — roughly
+  140k throwaway arrays per full-screen frame, and the GC pressure behind
+  periodic frame spikes. It now writes the 54 floats of a quad's six vertices
+  straight into the vertex scratch buffer, and hoists the NDC scale into
+  precomputed `_invW` / `_invH` reciprocals so the inner loop multiplies
+  instead of dividing per vertex.
+- **WebGL: skip default-background quads.** The framebuffer is already cleared
+  to the theme background before drawing, so cells that keep the default
+  background (the majority on a typical screen) no longer emit a background
+  quad — less vertex data generated, buffered, and rasterized. Inverse-video
+  and explicitly-colored cells still draw their quad.
+- **WebGL: tighter inner loop.** Both passes take local references to the
+  snapshot typed arrays, compute the row base index directly instead of
+  calling `model.index(x, y)` per cell, and hoist per-row / per-cell constants
+  out of the innermost expressions.
+- **Palette: no allocation on the true-color path.** `resolveRgb` now fills a
+  reused scratch triple for 24-bit colors instead of allocating a fresh array
+  per cell; the default and indexed cases already returned cached arrays.
+- Net: a full 200x50 (10k-cell) WebGL repaint measures ~0.19-0.21 ms for text
+  scenes and ~0.52 ms for a fully-colored-background scene under software GL
+  (SwiftShader); it is faster still on real GPUs. The Canvas2D renderer holds
+  at ~3.2-3.6 ms for the same workload under software rendering (Canvas2D's
+  `fillText` is hardware-accelerated in browsers, so this is a worst case).
+
+### Investigated, not shipped
+- A Canvas2D glyph atlas (rasterize each glyph once, blit with `drawImage`)
+  was prototyped and measured. It regressed the Canvas renderer under software
+  rendering (~3.2 -> ~5.8 ms) because `drawImage` from an offscreen atlas is
+  slower than batched `fillText` there, and browsers already cache glyph
+  rasterization internally, so the win on real GPUs is marginal at best. The
+  batched-`fillText` path from 0.3.1 is retained as the measured-faster option.
+
 ## [0.3.1] - 2026-07-04
 
 ### Performance

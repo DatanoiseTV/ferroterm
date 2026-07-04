@@ -140,6 +140,8 @@ export class WebGLRenderer {
     this.gl.viewport(0, 0, W, H);
     this.W = W;
     this.H = H;
+    this._invW = 2 / W;
+    this._invH = 2 / H;
 
     // Atlas: integer device-pixel cell, packed into a 2048 texture.
     this.gcw = Math.ceil(cellW * dpr);
@@ -238,29 +240,31 @@ export class WebGLRenderer {
     return g;
   }
 
-  // Append one quad's six vertices to the scratch buffer at `this._o`.
+  // Append one quad's six vertices to the scratch buffer at `this._o`, writing
+  // floats directly — no per-quad array allocation (this is the render hot loop,
+  // called for every background and glyph cell every frame).
   _quad(x, y, w, h, r, g, b, a, tex, tint) {
     const v = this.verts;
     let o = this._o;
-    const x0 = (x / this.W) * 2 - 1;
-    const y0 = 1 - (y / this.H) * 2;
-    const x1 = ((x + w) / this.W) * 2 - 1;
-    const y1 = 1 - ((y + h) / this.H) * 2;
-    const tx0 = tex ? tex.u0 : -1;
-    const ty0 = tex ? tex.v0 : -1;
-    const tx1 = tex ? tex.u1 : -1;
-    const ty1 = tex ? tex.v1 : -1;
-    const corners = [
-      [x0, y0, tx0, ty0], [x1, y0, tx1, ty0], [x0, y1, tx0, ty1],
-      [x1, y0, tx1, ty0], [x1, y1, tx1, ty1], [x0, y1, tx0, ty1],
-    ];
-    for (const c of corners) {
-      v[o++] = c[0]; v[o++] = c[1];
-      v[o++] = r; v[o++] = g; v[o++] = b; v[o++] = a;
-      v[o++] = c[2]; v[o++] = c[3];
-      v[o++] = tint;
+    const iw = this._invW, ih = this._invH;
+    const x0 = x * iw - 1;
+    const y0 = 1 - y * ih;
+    const x1 = (x + w) * iw - 1;
+    const y1 = 1 - (y + h) * ih;
+    let tx0, ty0, tx1, ty1;
+    if (tex) {
+      tx0 = tex.u0; ty0 = tex.v0; tx1 = tex.u1; ty1 = tex.v1;
+    } else {
+      tx0 = ty0 = tx1 = ty1 = -1;
     }
-    this._o = o;
+    // Six vertices (two triangles): TL, TR, BL, TR, BR, BL.
+    v[o] = x0; v[o + 1] = y0; v[o + 2] = r; v[o + 3] = g; v[o + 4] = b; v[o + 5] = a; v[o + 6] = tx0; v[o + 7] = ty0; v[o + 8] = tint;
+    v[o + 9] = x1; v[o + 10] = y0; v[o + 11] = r; v[o + 12] = g; v[o + 13] = b; v[o + 14] = a; v[o + 15] = tx1; v[o + 16] = ty0; v[o + 17] = tint;
+    v[o + 18] = x0; v[o + 19] = y1; v[o + 20] = r; v[o + 21] = g; v[o + 22] = b; v[o + 23] = a; v[o + 24] = tx0; v[o + 25] = ty1; v[o + 26] = tint;
+    v[o + 27] = x1; v[o + 28] = y0; v[o + 29] = r; v[o + 30] = g; v[o + 31] = b; v[o + 32] = a; v[o + 33] = tx1; v[o + 34] = ty0; v[o + 35] = tint;
+    v[o + 36] = x1; v[o + 37] = y1; v[o + 38] = r; v[o + 39] = g; v[o + 40] = b; v[o + 41] = a; v[o + 42] = tx1; v[o + 43] = ty1; v[o + 44] = tint;
+    v[o + 45] = x0; v[o + 46] = y1; v[o + 47] = r; v[o + 48] = g; v[o + 49] = b; v[o + 50] = a; v[o + 51] = tx0; v[o + 52] = ty1; v[o + 53] = tint;
+    this._o = o + 54;
   }
 
   render(model, _dirtyRows, _full, cursor, selection, hoverLink) {
@@ -271,19 +275,28 @@ export class WebGLRenderer {
     const dpr = this.metrics.dpr;
     const cw = this.metrics.cellW * dpr;
     const ch = this.metrics.cellH * dpr;
+    const pal = this.palette;
 
-    // Pass 1: cell backgrounds.
+    // The framebuffer is cleared to the default background just before drawing
+    // (below), so only cells with a non-default background (or inverse video)
+    // need an explicit quad here — skipping a quad for the majority of cells,
+    // which keep the theme background.
+    const fgA = model.fg, bgA = model.bg, flagsA = model.flags;
     for (let y = 0; y < model.rows; y++) {
+      const base = y * model.cols;
+      const yc = y * ch;
       for (let x = 0; x < model.cols; x++) {
-        const i = model.index(x, y);
-        const flags = model.flags[i];
+        const i = base + x;
+        const flags = flagsA[i];
         if (flags & ATTR.WIDE_SPACER) continue;
         const inverse = (flags & ATTR.INVERSE) !== 0;
+        // Default background and not inverse -> the clear already painted it.
+        if (!inverse && bgA[i] >>> 24 === 0) continue;
         const w = flags & ATTR.WIDE ? cw * 2 : cw;
         const rgb = inverse
-          ? this.palette.resolveRgb(model.fg[i], true, false)
-          : this.palette.resolveRgb(model.bg[i], false, false);
-        this._quad(x * cw, y * ch, w, ch, rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1, null, -1);
+          ? pal.resolveRgb(fgA[i], true, false)
+          : pal.resolveRgb(bgA[i], false, false);
+        this._quad(x * cw, yc, w, ch, rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1, null, -1);
       }
     }
 
@@ -299,12 +312,16 @@ export class WebGLRenderer {
     }
 
     // Pass 2: glyphs.
+    const cpA = model.cp, graphemeA = model.grapheme;
+    const t = Math.max(1, Math.round(dpr));
     for (let y = 0; y < model.rows; y++) {
+      const base = y * model.cols;
+      const yc = y * ch;
       for (let x = 0; x < model.cols; x++) {
-        const i = model.index(x, y);
-        const flags = model.flags[i];
+        const i = base + x;
+        const flags = flagsA[i];
         if (flags & (ATTR.WIDE_SPACER | ATTR.INVISIBLE)) continue;
-        const cp = model.cp[i];
+        const cp = cpA[i];
         if (cp === 0x20 || cp === 0) continue;
         const bold = (flags & ATTR.BOLD) !== 0;
         const inverse = (flags & ATTR.INVERSE) !== 0;
@@ -313,22 +330,22 @@ export class WebGLRenderer {
           (bold ? 1 : 0) | (flags & ATTR.ITALIC ? 2 : 0) | (isColorGlyph(cp) ? 4 : 0);
         // Single-scalar cells (the vast majority) pass cluster=null for a cheap
         // integer key; only real grapheme clusters build/lookup a string.
-        const cluster = model.grapheme[i] !== 0 ? model.clusterAt(i) : null;
+        const cluster = graphemeA[i] !== 0 ? model.clusterAt(i) : null;
         const g = this._glyph(cp, cluster, styleBits, cells);
         const fg = inverse
-          ? this.palette.resolveRgb(model.bg[i], false, false)
-          : this.palette.resolveRgb(model.fg[i], true, bold);
+          ? pal.resolveRgb(bgA[i], false, false)
+          : pal.resolveRgb(fgA[i], true, bold);
         const a = flags & ATTR.DIM ? 0.6 : 1;
         const w = cw * cells;
-        this._quad(x * cw, y * ch, w, ch, fg[0] / 255, fg[1] / 255, fg[2] / 255, a, g, g.tint);
+        const xc = x * cw;
+        this._quad(xc, yc, w, ch, fg[0] / 255, fg[1] / 255, fg[2] / 255, a, g, g.tint);
         // Underline / hover-link / strikethrough as thin quads.
         const hovered = hoverLink && hoverLink.y === y && x >= hoverLink.x0 && x <= hoverLink.x1;
-        const t = Math.max(1, Math.round(dpr));
         if (flags & ATTR.UNDERLINE || hovered) {
-          this._quad(x * cw, y * ch + ch - t * 2, w, t, fg[0] / 255, fg[1] / 255, fg[2] / 255, a, null, -1);
+          this._quad(xc, yc + ch - t * 2, w, t, fg[0] / 255, fg[1] / 255, fg[2] / 255, a, null, -1);
         }
         if (flags & ATTR.STRIKETHROUGH) {
-          this._quad(x * cw, y * ch + ch * 0.55, w, t, fg[0] / 255, fg[1] / 255, fg[2] / 255, a, null, -1);
+          this._quad(xc, yc + ch * 0.55, w, t, fg[0] / 255, fg[1] / 255, fg[2] / 255, a, null, -1);
         }
       }
     }

@@ -78,6 +78,7 @@ export class Palette {
     this._ovBg = null;
     this._ovCursor = null;
     this.brightenBold = brightenBold;
+    this._rgbScratch = [0, 0, 0]; // reused by resolveRgb's true-color path
     this.setTheme(theme);
   }
 
@@ -146,7 +147,13 @@ export class Palette {
     return `rgb(${r},${g},${b})`;
   }
 
-  /** Resolve to an `[r,g,b]` triple (used by the WebGL renderer). */
+  /**
+   * Resolve to an `[r,g,b]` triple (used by the WebGL renderer). The default and
+   * indexed cases return cached arrays (do not mutate); the true-color case
+   * returns a shared scratch, so the caller must read it before the next call
+   * (the renderer does — it copies the components into the vertex buffer
+   * immediately). This keeps the render hot path allocation-free.
+   */
   resolveRgb(packed, isDefaultFg, bold) {
     const kind = (packed >>> 24) & 0xff;
     if (kind === COLOR_DEFAULT) {
@@ -157,6 +164,10 @@ export class Palette {
       if (bold && this.brightenBold && i < 8) i += 8;
       return this.table[i];
     }
-    return [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
+    const s = this._rgbScratch;
+    s[0] = (packed >> 16) & 0xff;
+    s[1] = (packed >> 8) & 0xff;
+    s[2] = packed & 0xff;
+    return s;
   }
 }
