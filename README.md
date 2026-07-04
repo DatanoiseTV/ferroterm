@@ -37,14 +37,20 @@ and captures input.
 - **Dynamic palette**: OSC 4 (palette entries), OSC 10/11/12 (default fg / bg /
   cursor) and OSC 104/110/111/112 (resets) are applied live, including `?`
   color-query replies.
-- **Sixel graphics**: DCS Sixel images (RGB + HLS colors, RLE) are decoded and
-  composited over the grid in a renderer-agnostic overlay; images scroll with
-  their text and are anchored in scrollback. Works with both renderers.
+- **Inline images**: DCS **Sixel** (RGB + HLS colors, RLE) *and* the **iTerm2**
+  protocol (OSC 1337 `File=`, any format the browser decodes — PNG/JPEG/GIF/BMP/
+  WebP) are composited over the grid in a renderer-agnostic overlay; images scroll
+  with their text and are anchored in scrollback. Works with both renderers. Sixel
+  is decoded in the Rust core; iTerm2 images are decoded natively by the browser
+  (`createImageBitmap`), so no image codec is linked into the WASM.
 - **Two renderers, swappable at runtime**: a Canvas2D renderer that redraws only
-  dirty rows, and a WebGL renderer with a dynamic glyph atlas that draws the
-  whole grid in a single instanced draw call (one instance per cell, background
-  and glyph composited in the shader). WebGL falls back to Canvas2D when
-  unavailable.
+  dirty rows, and a WebGL renderer with a dynamic glyph atlas. The WebGL renderer
+  keeps a persistent per-cell GPU buffer and re-uploads only the rows that
+  changed, drawing the whole grid in one instanced call (one instance per cell,
+  background and glyph composited in the shader) with cursor and decorations in a
+  small overlay pass. A one-row edit repaints ~18× cheaper than a full frame, a
+  cursor blink ~54×, pixel-identical to a full re-render. WebGL falls back to
+  Canvas2D when unavailable.
 - **Reusable component**: `Ferroterm.create(el, opts)`, `onData` / `write`,
   theming, mouse/word/line selection, right-click menu, clipboard, bracketed
   paste, find, scrollback. Ships TypeScript types. No runtime dependencies.
@@ -176,21 +182,33 @@ palette, search and links built in — versus xterm.js's 68 KB core alone or
 ecosystem, years of production hardening); the doc is honest about the
 trade-offs.
 
-The browser `loadtest` command measures end-to-end (parse + render) MB/s and
-prints it the way the xterm.js demo does.
+In the browser, the demo's `benchmark` command prints parse throughput, per-
+renderer paint time and a per-frame pipeline breakdown (snapshot → applySnapshot
+→ render); `loadtest` measures end-to-end (parse + render) MB/s the way the
+xterm.js demo does. [`examples/benchmark.html`](examples/benchmark.html) is a
+standalone page that reports the detected GPU (real hardware vs a software
+fallback), then the same render / pipeline / incremental timings as tables plus
+copyable JSON.
 
 ## Testing
 
 ```bash
-cargo test -p ferroterm-core          # 30+ behavioral conformance tests
+cargo test -p ferroterm-core          # 50+ behavioral conformance + unit tests
+cd web && npm test                    # headless-Chrome renderer regression tests
 ```
 
-The tests assert against the *visible grid state* (what a renderer would draw),
-which is the strongest check for an emulator: printing/wrapping, cursor motion,
-erase/scroll regions, SGR (incl. true color), alt-screen isolation, wide chars,
-astral emoji, grapheme clusters (combining marks, ZWJ sequences, flags), OSC
-titles, OSC 8 links, DSR/DA replies, and a fuzz-style "malicious input must not
-panic/hang" case.
+The core tests assert against the *visible grid state* (what a renderer would
+draw), which is the strongest check for an emulator: printing/wrapping, cursor
+motion, erase/scroll regions, SGR (incl. true color), alt-screen isolation, wide
+chars, astral emoji, grapheme clusters (combining marks, ZWJ sequences, flags),
+OSC titles, OSC 8 links, Sixel and iTerm2 (OSC 1337) image placement, DSR/DA
+replies, and a fuzz-style "malicious input must not panic/hang" case.
+
+The renderer tests (`web/test/`, `CHROME_BIN` overridable) render a feature-rich
+scene through **both** renderers in headless Chrome and assert semantic per-cell
+pixel colors, same-renderer determinism, WebGL incremental-vs-full parity, and
+that an iTerm2 inline image decodes and draws to the exact expected pixel. CI
+runs `cargo fmt --check` + `clippy -D warnings` + `cargo test` and this suite.
 
 ## Design notes
 
@@ -210,9 +228,11 @@ panic/hang" case.
 
 ## Known limitations (honestly)
 
-- **Images: Sixel only.** Sixel graphics are decoded and rendered (see below);
-  the iTerm2 inline-image (OSC 1337) and Kitty graphics protocols are recognized
-  and consumed but not rendered.
+- **Images: Sixel and iTerm2, not Kitty.** Sixel and iTerm2 (OSC 1337 `File=`)
+  inline images are decoded and rendered; the Kitty graphics protocol is
+  recognized and consumed but not rendered. **No programming ligatures** —
+  correct ligature shaping needs a font shaper (GSUB/HarfBuzz), and a heuristic
+  hack would misrender as often as it helped, so it's deliberately left out.
 - **Reflow** rewraps the primary screen + scrollback on resize, keeping the
   cursor on its character. The alternate screen is intentionally *not* reflowed
   (full-screen apps repaint on `SIGWINCH`), and a cursor parked mid-screen on the
