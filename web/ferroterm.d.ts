@@ -28,6 +28,8 @@ export interface FerrotermOptions {
   copyOnSelect?: boolean;
   /** Right-click behavior: context menu, paste, or ignore (default 'menu'). */
   rightClick?: 'menu' | 'paste' | 'none';
+  /** Extra right-click menu items appended after the built-in ones. */
+  menuItems?: (ctx: { hasSelection: boolean }) => MenuItem[];
   /** Override link-click behavior instead of `window.open`. */
   onLink?: (uri: string, event: MouseEvent) => void;
   /** Override the WASM module URL (defaults to the packaged location). */
@@ -35,6 +37,14 @@ export interface FerrotermOptions {
 }
 
 export type Unsubscribe = () => void;
+
+export interface MenuItem {
+  label?: string;
+  accel?: string;
+  enabled?: boolean;
+  separator?: boolean;
+  action?: () => void;
+}
 
 export interface Match {
   /** Absolute logical line index (scrollback + screen). */

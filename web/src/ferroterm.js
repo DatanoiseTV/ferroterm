@@ -701,19 +701,38 @@ export class Ferroterm {
       boxShadow: '0 8px 24px rgba(0,0,0,.4)', userSelect: 'none',
     });
     const hasSel = !!this.getSelection();
-    const items = [
-      ['Copy', hasSel, () => this._copySelection()],
-      ['Paste', true, () => this._tryClipboardPaste()],
-      ['Select All', true, () => this.selectAll()],
-      ['Clear', true, () => this.clear()],
+    let items = [
+      { label: 'Copy', enabled: hasSel, action: () => this._copySelection() },
+      { label: 'Paste', action: () => this._tryClipboardPaste() },
+      { label: 'Select All', action: () => this.selectAll() },
+      { label: 'Clear', action: () => this.clear() },
     ];
-    for (const [label, enabled, action] of items) {
+    // Host-supplied items (e.g. New Tab / Split) are appended after a separator.
+    if (typeof this.opts.menuItems === 'function') {
+      const extra = this.opts.menuItems({ hasSelection: hasSel }) || [];
+      if (extra.length) items = items.concat([{ separator: true }], extra);
+    }
+    for (const item of items) {
+      if (item.separator) {
+        const sep = document.createElement('div');
+        Object.assign(sep.style, { height: '1px', background: '#2f334d', margin: '4px 6px' });
+        menu.appendChild(sep);
+        continue;
+      }
+      const enabled = item.enabled !== false;
       const it = document.createElement('div');
-      it.textContent = label;
+      it.textContent = item.label;
       Object.assign(it.style, {
-        padding: '6px 12px', borderRadius: '5px',
+        padding: '6px 12px', borderRadius: '5px', whiteSpace: 'nowrap',
+        display: 'flex', justifyContent: 'space-between', gap: '18px',
         cursor: enabled ? 'pointer' : 'default', opacity: enabled ? '1' : '.4',
       });
+      if (item.accel) {
+        const a = document.createElement('span');
+        a.textContent = item.accel;
+        a.style.color = '#565f89';
+        it.appendChild(a);
+      }
       if (enabled) {
         it.addEventListener('mouseenter', () => (it.style.background = '#2a2f45'));
         it.addEventListener('mouseleave', () => (it.style.background = 'transparent'));
@@ -721,7 +740,7 @@ export class Ferroterm {
           ev.preventDefault();
           ev.stopPropagation();
           this._closeMenu();
-          action();
+          item.action();
           this.focus();
         });
       }

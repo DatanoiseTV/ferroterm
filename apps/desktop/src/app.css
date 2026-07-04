@@ -71,3 +71,17 @@ body { display: flex; flex-direction: column; }
   padding: 4px 8px; cursor: pointer; line-height: 1;
 }
 .find-bar button:hover { background: #3b3f5c; }
+
+.app-menu {
+  position: fixed; z-index: 9999; min-width: 190px;
+  background: #1f2335; border: 1px solid #2f334d; border-radius: 8px;
+  padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 13px;
+}
+.app-menu .item {
+  display: flex; justify-content: space-between; gap: 20px; align-items: center;
+  padding: 6px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+}
+.app-menu .item:hover { background: #2a2f45; }
+.app-menu .item.disabled { opacity: .4; cursor: default; }
+.app-menu .item .accel { color: #565f89; }
+.app-menu .sep { height: 1px; background: #2f334d; margin: 4px 6px; }

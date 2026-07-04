@@ -21,9 +21,10 @@ export function attachShell(term) {
       const code = ch.codePointAt(0);
       if (ch === '\r') {
         term.write('\r\n');
-        run(term, line.trim());
+        const r = run(term, line.trim());
         line = '';
-        prompt();
+        if (r instanceof Promise) r.then(() => prompt());
+        else prompt();
       } else if (code === 0x7f || code === 0x08) {
         if (line.length) {
           line = line.slice(0, -1);
@@ -75,6 +76,9 @@ function run(term, cmd) {
       return links(term);
     case 'loadtest':
       return loadtest(term, parseInt(args[0], 10) || 2);
+    case 'bench':
+    case 'benchmark':
+      return benchmark(term, parseInt(args[0], 10) || 4);
     case 'clear':
       return term.write('\x1b[2J\x1b[H');
     default:
@@ -91,7 +95,8 @@ function help(term) {
       '  ' + c('1;33', 'colors') + '    print the 256-color palette',
       '  ' + c('1;33', 'chars') + '     print styles & unicode / wide glyphs',
       '  ' + c('1;33', 'links') + '     print clickable hyperlinks (OSC 8 + auto)',
-      '  ' + c('1;33', 'loadtest') + ' [MB]  stream N MB of data and report MB/s',
+      '  ' + c('1;33', 'loadtest') + ' [MB]  stream N MB and report MB/s',
+      '  ' + c('1;33', 'benchmark') + ' [MB] full suite: parse scenarios + renderer paint',
       '  ' + c('1;33', 'clear') + '     clear the screen',
       '',
     ].join('\r\n') + '\r\n'
@@ -174,4 +179,228 @@ function loadtest(term, mb) {
         '\r\n'
     );
   });
+}
+
+// ---------------------------------------------------------------------------
+// Built-in benchmark: parse throughput across representative workloads, plus a
+// Canvas2D-vs-WebGL paint comparison. Prints formatted result tables.
+// ---------------------------------------------------------------------------
+
+const WORDS = ['ferroterm', 'wasm', 'rust', 'render', 'parser', 'vt100', 'grid', 'scroll', 'buffer', 'atlas'];
+// A tiny deterministic PRNG so runs are comparable.
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    return (s >>> 0) / 0xffffffff;
+  };
+}
+
+function genPlain(target) {
+  const r = rng(1);
+  let out = '';
+  while (out.length < target) {
+    let line = '';
+    for (let i = 0; i < 12; i++) line += WORDS[(r() * WORDS.length) | 0] + ' ';
+    out += line + '\r\n';
+  }
+  return out;
+}
+function genSgr(target) {
+  const r = rng(2);
+  let out = '';
+  while (out.length < target) {
+    let line = '';
+    for (let i = 0; i < 10; i++) line += `\x1b[38;5;${(r() * 256) | 0}m` + WORDS[(r() * WORDS.length) | 0] + ' ';
+    out += line + '\x1b[0m\r\n';
+  }
+  return out;
+}
+function genTrue(target) {
+  const r = rng(3);
+  let out = '';
+  while (out.length < target) {
+    let line = '';
+    for (let i = 0; i < 8; i++)
+      line += `\x1b[38;2;${(r() * 256) | 0};${(r() * 256) | 0};${(r() * 256) | 0}m` + WORDS[(r() * WORDS.length) | 0] + ' ';
+    out += line + '\x1b[0m\r\n';
+  }
+  return out;
+}
+function genCursor(target) {
+  // Progress-bar style: home, redraw a line with cursor moves + erase.
+  const r = rng(4);
+  let out = '';
+  while (out.length < target) {
+    const pct = (r() * 100) | 0;
+    out += `\x1b[1;1H\x1b[2K[${'#'.repeat(pct / 4 | 0)}${'-'.repeat(25 - (pct / 4 | 0))}] ${pct}% `;
+    out += `\x1b[2;1H\x1b[2Kframe ${(r() * 100000) | 0}`;
+  }
+  return out;
+}
+function genScroll(target, cols) {
+  const r = rng(5);
+  let out = '';
+  const w = Math.max(40, cols);
+  while (out.length < target) {
+    let line = '';
+    while (line.length < w) line += WORDS[(r() * WORDS.length) | 0] + ' ';
+    out += line.slice(0, w) + '\r\n';
+  }
+  return out;
+}
+
+function benchmark(term, mb) {
+  const target = mb * 1024 * 1024;
+  const scenarios = [
+    ['plain text', genPlain(target), '1;37'],
+    ['256-color (SGR)', genSgr(target), '1;36'],
+    ['true color', genTrue(target), '1;35'],
+    ['cursor / progress', genCursor(target), '1;33'],
+    ['scroll (full-width)', genScroll(target, term.cols), '1;32'],
+  ];
+
+  const enc = new TextEncoder();
+  term.write(c('1;96', 'running benchmark…') + c('90', ` (${mb} MB per scenario)`) + '\r\n');
+  const results = scenarios.map(([name, payload, col]) => {
+    const bytes = enc.encode(payload);
+    term.write('\x1b[2J\x1b[H');
+    const t0 = performance.now();
+    term.write(bytes); // synchronous parse — this is the emulator's core cost
+    const ms = performance.now() - t0;
+    return { name, col, mb: bytes.length / 1e6, ms, mbps: bytes.length / 1e6 / (ms / 1000) };
+  });
+
+  // Renderer paint comparison (async), then print everything together so the
+  // fullscreen paint frames don't overwrite the result tables.
+  return measureRenderers(term).then((paint) => {
+    term.write('\x1b[2J\x1b[H');
+    printParseTable(term, results, mb);
+    printPaintTable(term, paint, term.cols, term.rows);
+  });
+}
+
+const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
+
+function fullScreenFrame(term, frame) {
+  let s = '\x1b[H';
+  for (let y = 0; y < term.rows; y++) {
+    let line = '';
+    for (let x = 0; x < term.cols; x++) {
+      const cc = (x + y + frame) % 256;
+      line += `\x1b[48;5;${cc}m\x1b[38;5;${(cc + 128) % 256}m*`;
+    }
+    s += line + '\x1b[0m';
+    if (y < term.rows - 1) s += '\r\n';
+  }
+  return s;
+}
+
+async function measureRenderers(term) {
+  const original = term.rendererName?.toLowerCase().includes('canvas') ? 'canvas' : 'webgl';
+  const out = [];
+  for (const kind of ['canvas', 'webgl']) {
+    term.setRenderer(kind);
+    await nextFrame();
+    // warm up (glyph atlas / first paint)
+    term.write(fullScreenFrame(term, 0));
+    await nextFrame();
+    const frames = 24;
+    let total = 0;
+    let best = Infinity;
+    for (let f = 1; f <= frames; f++) {
+      const t0 = performance.now();
+      term.write(fullScreenFrame(term, f));
+      await nextFrame();
+      const dt = performance.now() - t0;
+      total += dt;
+      best = Math.min(best, dt);
+    }
+    out.push({ kind: term.rendererName, avg: total / frames, best });
+  }
+  term.setRenderer(original);
+  await nextFrame();
+  term.write('\x1b[2J\x1b[H');
+  return out;
+}
+
+// --- table formatting ---
+
+const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+const padL = (s, n) => ' '.repeat(Math.max(0, n - strip(s).length)) + s;
+const padR = (s, n) => s + ' '.repeat(Math.max(0, n - strip(s).length));
+const B = (s) => c('90', s); // border color
+
+function drawTable(term, title, cols, rows) {
+  const widths = cols.map((col, i) =>
+    Math.max(strip(col.head).length, ...rows.map((r) => strip(r[i]).length))
+  );
+  const line = (l, m, rr) =>
+    B(l + widths.map((w) => '─'.repeat(w + 2)).join(m) + rr);
+  const fmt = (cells) =>
+    B('│') +
+    cells
+      .map((cell, i) => ' ' + (cols[i].align === 'r' ? padL(cell, widths[i]) : padR(cell, widths[i])) + ' ')
+      .join(B('│')) +
+    B('│');
+
+  const totalW = widths.reduce((a, w) => a + w + 3, 1);
+  const pad = Math.max(0, totalW - 2 - strip(title).length);
+  term.write(B('╭─') + title + B('─'.repeat(pad) + '╮') + '\r\n');
+  term.write(fmt(cols.map((col) => c('1;97', col.head))) + '\r\n');
+  term.write(line('├', '┼', '┤') + '\r\n');
+  for (const r of rows) term.write(fmt(r) + '\r\n');
+  term.write(line('╰', '┴', '╯') + '\r\n');
+}
+
+function printParseTable(term, results, mb) {
+  const bar = (mbps) => {
+    const max = 400; // MB/s full bar
+    const n = Math.min(16, Math.round((mbps / max) * 16));
+    return c('32', '█'.repeat(n)) + c('90', '░'.repeat(16 - n));
+  };
+  const rows = results.map((r) => [
+    c(r.col, r.name),
+    `${r.mb.toFixed(1)} MB`,
+    `${r.ms.toFixed(0)} ms`,
+    c('1;92', `${r.mbps.toFixed(0)} MB/s`),
+    bar(r.mbps),
+  ]);
+  const avg = results.reduce((a, r) => a + r.mbps, 0) / results.length;
+  drawTable(
+    term,
+    c('1;96', ` ferroterm parse benchmark `) + c('90', `(${mb} MB each, ${term.rendererName}) `),
+    [
+      { head: 'scenario', align: 'l' },
+      { head: 'data', align: 'r' },
+      { head: 'time', align: 'r' },
+      { head: 'throughput', align: 'r' },
+      { head: 'rate', align: 'l' },
+    ],
+    rows
+  );
+  term.write(
+    c('90', '  average parse throughput: ') + c('1;92', `${avg.toFixed(0)} MB/s`) + '\r\n\r\n'
+  );
+}
+
+function printPaintTable(term, paint, cols, rows) {
+  const trows = paint.map((p) => [
+    c('1;37', p.kind),
+    `${p.avg.toFixed(2)} ms`,
+    `${p.best.toFixed(2)} ms`,
+    c('1;92', `${(1000 / p.avg).toFixed(0)} fps`),
+  ]);
+  drawTable(
+    term,
+    c('1;96', ` renderer paint `) + c('90', `(full ${cols}x${rows} redraw/frame) `),
+    [
+      { head: 'renderer', align: 'l' },
+      { head: 'avg frame', align: 'r' },
+      { head: 'best frame', align: 'r' },
+      { head: 'fps', align: 'r' },
+    ],
+    trows
+  );
+  term.write(c('90', '  (lower frame time is better; both redraw every cell each frame)') + '\r\n');
 }

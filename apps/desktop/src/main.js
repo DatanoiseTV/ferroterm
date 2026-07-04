@@ -53,6 +53,18 @@ function newSession() {
     fontSize,
     scrollback: 5000,
     copyOnSelect: true,
+    // Terminal right-click menu: the component supplies Copy/Paste/Select-All/
+    // Clear; the app appends tab/window/split actions targeting this pane.
+    menuItems: () => [
+      { label: 'Split Right', accel: '⌘D', action: () => splitActive('row') },
+      { label: 'Split Down', accel: '⇧⌘D', action: () => splitActive('col') },
+      { label: 'Find…', accel: '⌘F', action: () => openFind() },
+      { separator: true },
+      { label: 'New Tab', accel: '⌘T', action: () => newTab() },
+      { label: 'New Window', accel: '⌘N', action: () => newWindow() },
+      { separator: true },
+      { label: 'Close Pane', accel: '⌘W', action: () => activeLeaf && closePane(activeLeaf) },
+    ],
   });
   const s = { id, term, title: 'shell', spawned: false };
   sessions.set(id, s);
@@ -457,6 +469,75 @@ function act(e, fn) {
 }
 
 document.getElementById('new-tab').addEventListener('click', () => newTab());
+
+// --- app-level context menus (tab bar, titlebar, new-tab button) -----------
+
+let appMenu = null;
+function showMenu(x, y, items) {
+  closeAppMenu();
+  const menu = document.createElement('div');
+  menu.className = 'app-menu';
+  for (const item of items) {
+    if (item.separator) {
+      const s = document.createElement('div');
+      s.className = 'sep';
+      menu.appendChild(s);
+      continue;
+    }
+    const el = document.createElement('div');
+    el.className = 'item' + (item.enabled === false ? ' disabled' : '');
+    el.innerHTML = `<span>${item.label}</span>${item.accel ? `<span class="accel">${item.accel}</span>` : ''}`;
+    if (item.enabled !== false) {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAppMenu();
+        item.action();
+      });
+    }
+    menu.appendChild(el);
+  }
+  document.body.appendChild(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  appMenu = menu;
+  setTimeout(() => window.addEventListener('mousedown', closeAppMenu, { once: true }), 0);
+}
+function closeAppMenu() {
+  if (appMenu) {
+    appMenu.remove();
+    appMenu = null;
+  }
+}
+
+function tabBarMenu(x, y, tab) {
+  const items = [
+    { label: 'New Tab', accel: '⌘T', action: () => newTab() },
+    { label: 'New Window', accel: '⌘N', action: () => newWindow() },
+  ];
+  if (tab) {
+    items.push(
+      { separator: true },
+      { label: 'Split Right', accel: '⌘D', action: () => { activate(tab.id); splitActive('row'); } },
+      { label: 'Split Down', accel: '⇧⌘D', action: () => { activate(tab.id); splitActive('col'); } },
+      { separator: true },
+      { label: 'Close Tab', accel: '⌘W', action: () => closeTab(tab.id) }
+    );
+  }
+  showMenu(x, y, items);
+}
+
+document.getElementById('titlebar').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const tabEl = e.target.closest('.tab');
+  const tab = tabEl ? tabs.find((t) => t.tabEl === tabEl) : null;
+  tabBarMenu(e.clientX, e.clientY, tab);
+});
+document.getElementById('new-tab').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  tabBarMenu(e.clientX, e.clientY, null);
+});
 
 // --- boot ------------------------------------------------------------------
 

@@ -14,6 +14,12 @@ All notable changes to this project are documented here. The format is based on
 - Buffer search: `findAll`, `lineText`, `totalLines`, `scrollToLine`.
 - Desktop app: split panes with drag-resizable dividers, multiple windows,
   find, font zoom, and clear (see the shortcut table in the README).
+- Extensible right-click menu (`menuItems` option); the desktop terminal menu
+  now includes Split / New Tab / New Window / Close Pane, and the tab bar has
+  its own New Tab / New Window / Split / Close context menu.
+- A proper built-in `benchmark` command in the demo: per-workload parse
+  throughput (plain / 256-color / true color / cursor / scroll) plus a
+  Canvas2D-vs-WebGL paint comparison, in formatted tables.
 - Web Serial demo (`examples/webserial.html`).
 
 ### Changed
