@@ -1219,13 +1219,23 @@ impl Terminal {
     /// cell is a single scalar (`codepoint`); non-zero ids resolve to the full
     /// cluster string via [`Terminal::grapheme`].
     pub fn snapshot(&mut self, force: bool) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.snapshot_into(force, &mut out);
+        out
+    }
+
+    /// Like [`snapshot`], but fills a caller-provided buffer (cleared first) so
+    /// its capacity is reused across frames — no per-frame allocation. The wasm
+    /// binding uses this to hand JavaScript a zero-copy view of the packed data.
+    pub fn snapshot_into(&mut self, force: bool, out: &mut Vec<u32>) {
         let force = force || self.viewport_full;
         let cols = self.cols();
         let rows = self.rows();
         let total_back = self.scrollback.len();
         let offset = self.display_offset;
 
-        let mut out = Vec::with_capacity(7 + rows * (1 + cols * SNAPSHOT_CELL_WORDS));
+        out.clear();
+        out.reserve(7 + rows * (1 + cols * SNAPSHOT_CELL_WORDS));
         out.push(SNAPSHOT_MAGIC);
         out.push(cols as u32);
         out.push(rows as u32);
@@ -1264,11 +1274,11 @@ impl Terminal {
             let idx = total_back as isize - offset as isize + y as isize;
             if idx >= 0 && (idx as usize) < total_back {
                 let line = &self.scrollback[idx as usize];
-                push_line(&mut out, line, cols);
+                push_line(out, line, cols);
             } else {
                 let gy = (idx - total_back as isize) as usize;
                 let line = self.buf().line(gy.min(rows - 1));
-                push_line(&mut out, line, cols);
+                push_line(out, line, cols);
             }
         }
         out[n_idx] = n;
@@ -1277,7 +1287,6 @@ impl Terminal {
         self.primary.clear_dirty();
         self.alt.clear_dirty();
         self.viewport_full = false;
-        out
     }
 
     /// Whether row `y` of the *viewport* needs redraw. When scrolled into

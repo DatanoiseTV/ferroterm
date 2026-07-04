@@ -38,8 +38,16 @@ const DEFAULTS = {
 };
 
 let wasmReady = null;
+// The wasm exports (incl. `memory`), captured once init resolves so the render
+// loop can build a zero-copy Uint32Array view over the snapshot buffer.
+let wasmExports = null;
 export function initWasm(wasmUrl) {
-  if (!wasmReady) wasmReady = wasmUrl ? init(wasmUrl) : init();
+  if (!wasmReady) {
+    wasmReady = (wasmUrl ? init(wasmUrl) : init()).then((w) => {
+      wasmExports = w;
+      return w;
+    });
+  }
   return wasmReady;
 }
 
@@ -86,6 +94,7 @@ export class Ferroterm {
     this._encoder = new TextEncoder();
     this.palette = new Palette(this.opts.theme);
     this.term = new WasmTerminal(this.opts.cols, this.opts.rows, this.opts.scrollback);
+    this._wasm = wasmExports; // for zero-copy snapshot views
     this.model = new GridModel(this.opts.cols, this.opts.rows);
     // Let the model resolve grapheme-cluster ids (base + combining marks, ZWJ
     // emoji, flags) to their full strings for rendering, selection and copy.
@@ -505,7 +514,7 @@ export class Ferroterm {
   }
 
   _frame() {
-    const snap = this.term.snapshot(this._forceNext);
+    const snap = this._snapshot(this._forceNext);
     this._forceNext = false;
     const { dirtyRows, full } = this.model.applySnapshot(snap);
     if (full) this.renderer.resize(this.model, this.metrics);
@@ -520,6 +529,24 @@ export class Ferroterm {
     this.renderer.render(this.model, dirtyRows, full, cursor, this._selection, this._hoverLink);
     if (full) this._sizeOverlay();
     this._drawImages();
+  }
+
+  /**
+   * Get the packed snapshot for this frame. Uses a zero-copy `Uint32Array`
+   * view straight over the wasm snapshot buffer (no per-frame allocation or
+   * copy); the view is only valid until the next wasm call, so `applySnapshot`
+   * must consume it immediately (it does — it copies into the model's arrays).
+   * Falls back to the copying path if the wasm exports weren't captured.
+   */
+  _snapshot(force) {
+    if (this._wasm) {
+      const ptr = this.term.snapshotPtr(force);
+      const len = this.term.snapshotLen();
+      // Rebuild the view every frame: wasm memory may have grown (detaching an
+      // old buffer) while producing the snapshot.
+      return new Uint32Array(this._wasm.memory.buffer, ptr, len);
+    }
+    return this.term.snapshot(force);
   }
 
   // --- host output --------------------------------------------------------

@@ -14,6 +14,10 @@ pub struct Terminal {
     inner: CoreTerminal,
     // Scratch buffer reused for key/char/mouse encoding to avoid allocations.
     scratch: Vec<u8>,
+    // Persistent snapshot buffer. Kept alive between frames so `snapshotPtr`
+    // can hand JavaScript a zero-copy view into wasm memory instead of
+    // allocating and copying a fresh Uint32Array every frame.
+    snap: Vec<u32>,
 }
 
 #[wasm_bindgen]
@@ -25,6 +29,7 @@ impl Terminal {
         Terminal {
             inner: CoreTerminal::new(cols, rows, scrollback),
             scratch: Vec::with_capacity(16),
+            snap: Vec::new(),
         }
     }
 
@@ -41,8 +46,30 @@ impl Terminal {
 
     /// Produce a render snapshot as a packed `Uint32Array`.
     /// Pass `force = true` to emit every row (e.g. after a theme change).
+    ///
+    /// This copies the data across the wasm boundary. The render loop uses the
+    /// zero-copy [`snapshot_ptr`](Self::snapshot_ptr) path instead; this remains
+    /// for callers (tests, benchmarks) that want an owned array.
     pub fn snapshot(&mut self, force: bool) -> Vec<u32> {
         self.inner.snapshot(force)
+    }
+
+    /// Build the snapshot into the persistent buffer and return a pointer to it
+    /// in wasm linear memory. JavaScript wraps `[ptr, len]` in a `Uint32Array`
+    /// view — no allocation, no copy. The pointer is valid until the next call
+    /// that mutates the terminal (which may reallocate the buffer or grow
+    /// memory), so the caller must read the view before doing anything else.
+    #[wasm_bindgen(js_name = snapshotPtr)]
+    pub fn snapshot_ptr(&mut self, force: bool) -> u32 {
+        self.inner.snapshot_into(force, &mut self.snap);
+        self.snap.as_ptr() as u32
+    }
+
+    /// Length (in `u32` words) of the buffer produced by the last
+    /// [`snapshot_ptr`](Self::snapshot_ptr) call.
+    #[wasm_bindgen(js_name = snapshotLen)]
+    pub fn snapshot_len(&self) -> u32 {
+        self.snap.len() as u32
     }
 
     /// Resize the grid.
