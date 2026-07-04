@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-05
+
+### Performance
+- **Instanced WebGL renderer.** The WebGL renderer now draws the whole grid
+  with a single instanced draw call (WebGL1 + `ANGLE_instanced_arrays`): one
+  instance per visible cell, expanded from a shared unit quad in the vertex
+  shader. Each instance carries its pixel rect, foreground/background colors and
+  glyph atlas coordinates, and the fragment shader composites the glyph over the
+  background — so a cell's background and text are one instance instead of two
+  separate quads, and default-background cells emit nothing (the clear paints
+  them). This writes ~17 floats per cell instead of the 54 floats per quad (up
+  to two quads per cell) the previous batched renderer wrote. A full 200x50
+  (10k-cell) repaint under software GL (SwiftShader) dropped to ~0.11 ms for
+  text and ~0.14 ms for a fully-colored-background screen, from ~0.20 ms and
+  ~0.61 ms — 1.7x faster on text and 4.4x on backgrounds, and colored
+  backgrounds now cost about the same as plain text. Output is pixel-identical
+  to the previous renderer (verified by a full-canvas diff across inverse,
+  underline, strike, dim, italic, bold, wide CJK/Hangul, true-color and
+  256-color content). If `ANGLE_instanced_arrays` is unavailable the renderer
+  falls back to Canvas2D as before.
+- **Zero-copy render snapshots across the wasm boundary.** The render loop no
+  longer allocates and copies a fresh ~240KB `Uint32Array` per frame (the
+  largest per-frame allocation, ~14MB/s of GC garbage at 60fps). The core gained
+  `snapshot_into` (fills a reused buffer) and the wasm layer exposes
+  `snapshotPtr` / `snapshotLen` over a persistent buffer; JavaScript wraps that
+  in a `Uint32Array` view straight over wasm memory. Snapshot stage 0.063 ->
+  0.036 ms (43% faster); rendering is unchanged and verified pixel-identical.
+
 ## [0.3.2] - 2026-07-04
 
 ### Performance

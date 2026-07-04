@@ -41,8 +41,10 @@ and captures input.
   composited over the grid in a renderer-agnostic overlay; images scroll with
   their text and are anchored in scrollback. Works with both renderers.
 - **Two renderers, swappable at runtime**: a Canvas2D renderer that redraws only
-  dirty rows, and a WebGL renderer with a dynamic glyph atlas and batched quads.
-  WebGL falls back to Canvas2D when unavailable.
+  dirty rows, and a WebGL renderer with a dynamic glyph atlas that draws the
+  whole grid in a single instanced draw call (one instance per cell, background
+  and glyph composited in the shader). WebGL falls back to Canvas2D when
+  unavailable.
 - **Reusable component**: `Ferroterm.create(el, opts)`, `onData` / `write`,
   theming, mouse/word/line selection, right-click menu, clipboard, bracketed
   paste, find, scrollback. Ships TypeScript types. No runtime dependencies.
