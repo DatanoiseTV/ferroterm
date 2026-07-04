@@ -14,7 +14,7 @@ browser, feeds them **byte-for-byte identical** payloads, and times each one.
   synchronous `write()` call. Both defer rendering to a later animation frame,
   so this isolates the parser/buffer — the core of a terminal emulator.
 - **4 MB per payload, median of 4 runs**, buffers reset between runs.
-- xterm.js **5.5.0**; ferroterm **0.2.0**.
+- xterm.js **5.5.0**; ferroterm **0.3.0**.
 - Run headless (Chrome + SwiftShader). **Absolute numbers depend on hardware;
   the ratio is the point.** On a real GPU/CPU both are faster.
 
@@ -28,7 +28,7 @@ python3 -m http.server 8080          # from the repo root
 
 ## Parse throughput (higher is better)
 
-| Workload | xterm.js 5.5 | ferroterm 0.2 | speedup |
+| Workload | xterm.js 5.5 | ferroterm 0.3 | speedup |
 | --- | ---: | ---: | ---: |
 | plain text | 102 MB/s | **446 MB/s** | **4.4×** |
 | 256-color (SGR) | 114 MB/s | **202 MB/s** | **1.8×** |
@@ -44,17 +44,20 @@ parses the same mix at ~250 MB/s in-process; WASM lands in the same ballpark.
 
 | | raw | gzip |
 | --- | ---: | ---: |
-| **ferroterm** wasm + JS component (both renderers) | 120 KB | **41 KB** |
+| **ferroterm** wasm + JS component (both renderers, all features) | 191 KB | **65 KB** |
 | **xterm.js** core `xterm.js` | 289 KB | 68 KB |
 | xterm.js + `addon-webgl` | 390 KB | ~95 KB |
 
 ferroterm's JS is unminified source here; minified it is smaller still. The wasm
-is 63 KB (25 KB gzip). Canvas2D **and** WebGL renderers are built in — no separate
-addon.
+is 105 KB (42 KB gzip) — up from 0.2 as reflow, dynamic palette and a Sixel
+decoder were added. Canvas2D **and** WebGL renderers plus Sixel, search, links
+and reflow are all built in — no separate addons — so this compares against
+xterm.js **with** its webgl addon (95 KB gzip); ferroterm is still smaller and
+includes more.
 
 ## Feature comparison
 
-| | ferroterm 0.2 | xterm.js 5.5 |
+| | ferroterm 0.3 | xterm.js 5.5 |
 | --- | --- | --- |
 | Core language | Rust → WebAssembly | TypeScript |
 | Renderers | Canvas2D + WebGL (built in) | DOM + WebGL (addon) |
@@ -76,9 +79,11 @@ addon.
 
 ## Honest take
 
-ferroterm is **faster** (1.4–4.4× parse), **smaller** (41 KB gzip with both
-renderers vs 68–95 KB), and parses untrusted bytes in **memory-safe Rust**. It
-ships Canvas2D and WebGL out of the box.
+ferroterm is **faster** (1.4–4.4× parse), **comparably small** (65 KB gzip with
+both renderers *and* Sixel, reflow, palette, search and links built in, vs
+xterm.js's 68 KB core alone or ~95 KB with the webgl addon), and parses
+untrusted bytes in **memory-safe Rust**. It ships Canvas2D and WebGL out of the
+box.
 
 xterm.js is **more mature**: a large addon ecosystem and years of production
 hardening in editors and IDEs. If you need a proven track record or a specific

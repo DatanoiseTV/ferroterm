@@ -168,9 +168,11 @@ ballpark.
 
 **Head-to-head vs. xterm.js** (same browser, identical payloads — see
 [COMPARISON.md](COMPARISON.md) for methodology): ferroterm parses **1.4×–4.4×
-faster** and ships in **41 KB gzip** (both renderers) vs xterm.js's 68–95 KB.
-xterm.js remains more mature (larger addon ecosystem, years of production
-hardening); the doc is honest about the trade-offs.
+faster** and ships in **~65 KB gzip** with both renderers *and* Sixel, reflow,
+palette, search and links built in — versus xterm.js's 68 KB core alone or
+~95 KB with its webgl addon. xterm.js remains more mature (larger addon
+ecosystem, years of production hardening); the doc is honest about the
+trade-offs.
 
 The browser `loadtest` command measures end-to-end (parse + render) MB/s and
 prints it the way the xterm.js demo does.
