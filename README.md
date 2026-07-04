@@ -33,11 +33,15 @@ and captures input.
   dirty rows, and a WebGL renderer with a dynamic glyph atlas and batched quads.
   WebGL falls back to Canvas2D when unavailable.
 - **Reusable component**: `Ferroterm.create(el, opts)`, `onData` / `write`,
-  theming, selection, clipboard, bracketed paste, scrollback. Ships TypeScript
-  types. No runtime dependencies.
-- **Measured**: ~130 MB/s parse throughput (native release), sub-millisecond
+  theming, mouse/word/line selection, right-click menu, clipboard, bracketed
+  paste, find, scrollback. Ships TypeScript types. No runtime dependencies.
+- **Scales**: an engine/view split (`attachView`/`detachView`) lets a host keep
+  hundreds of live terminals while only the visible ones hold a renderer, so you
+  never exhaust the browser's ~16 WebGL-context limit.
+- **Measured**: ~248 MB/s parse throughput (native release), sub-millisecond
   render snapshots. See [Benchmarks](#benchmarks).
-- **Desktop app**: a tabbed Tauri terminal with real PTYs and a battery + FPS HUD.
+- **Desktop app**: a tabbed, split-pane Tauri terminal with real PTYs, multiple
+  windows, find, font zoom, and a battery + FPS HUD.
 
 ## Repository layout
 
@@ -58,9 +62,10 @@ rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.122
 ./build.sh                 # -> web/pkg/
 
-# 2. Serve the repo and open the demo.
+# 2. Serve the repo and open a demo.
 python3 -m http.server 8080
-# visit http://localhost:8080/examples/
+# visit http://localhost:8080/examples/            (local shell + loadtest)
+#       http://localhost:8080/examples/webserial.html   (Web Serial device)
 ```
 
 In your own app:
@@ -117,9 +122,21 @@ npm install                      # @tauri-apps/cli
 npm run dev                      # sync component + `tauri dev`
 ```
 
-Features: multiple tabs (Cmd/Ctrl+T / +W, Cmd/Ctrl+1..9), per-tab PTY via
-`portable-pty`, live title updates, battery percentage + time-remaining, FPS and
-throughput readouts, runtime renderer selection.
+Features and shortcuts:
+
+| Shortcut | Action |
+| --- | --- |
+| Cmd/Ctrl+T / +W | new / close tab (or pane) |
+| Cmd/Ctrl+1..9 | switch tab |
+| Cmd/Ctrl+D / +Shift+D | split pane right / down |
+| Cmd/Ctrl+N | new window |
+| Cmd/Ctrl+F | find in scrollback |
+| Cmd/Ctrl+K | clear |
+| Cmd/Ctrl +/-/0 | font zoom in / out / reset |
+
+Each tab/pane runs its own shell over `portable-pty`; only on-screen panes hold a
+renderer. Live title updates, battery percentage + time-remaining, FPS and
+throughput readouts, right-click menu, drag-resizable splits.
 
 ## Benchmarks
 
@@ -130,9 +147,13 @@ cargo run --release -p ferroterm-core --example bench
 On an Apple-silicon laptop (native release build):
 
 ```
-80x24:  parse 130.3 MB/s  (34 MB in 257 ms)   snapshot 0.01 ms/frame
-200x50: parse 126.6 MB/s  (34 MB in 265 ms)   snapshot 0.07 ms/frame
+80x24:  parse 240.1 MB/s  (34 MB in 140 ms)   snapshot 0.00 ms/frame
+200x50: parse 248.2 MB/s  (34 MB in 135 ms)   snapshot 0.02 ms/frame
 ```
+
+The parser has an ASCII fast-path that fills line spans in bulk; plain-text
+throughput is higher still. WASM runs a bit slower than native but in the same
+ballpark.
 
 The browser `loadtest` command measures end-to-end (parse + render) MB/s and
 prints it the way the xterm.js demo does.

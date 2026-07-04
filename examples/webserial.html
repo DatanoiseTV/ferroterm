@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ferroterm — Web Serial</title>
+  <link rel="stylesheet" href="../web/ferroterm.css" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #14151f; color: #c0caf5;
+      font: 13px/1.4 -apple-system, system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; }
+    header { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+      border-bottom: 1px solid #24283b; }
+    header h1 { font-size: 14px; margin: 0; font-weight: 700; }
+    header h1 span { color: #7aa2f7; }
+    .spacer { margin-left: auto; }
+    button, select { background: #1f2335; color: #c0caf5; border: 1px solid #2f334d;
+      border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+    button:hover:not(:disabled) { background: #2a2f45; }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { color: #9aa5ce; font-variant-numeric: tabular-nums; }
+    #status.on { color: #9ece6a; }
+    #status.err { color: #f7768e; }
+    #term { flex: 1; padding: 8px; }
+    footer { padding: 6px 14px; color: #565f89; border-top: 1px solid #24283b; }
+    code { color: #e0af68; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ferro<span>term</span> · Web Serial</h1>
+    <label>baud
+      <select id="baud">
+        <option>9600</option><option>19200</option><option>38400</option>
+        <option>57600</option><option selected>115200</option>
+        <option>230400</option><option>460800</option><option>921600</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="crlf" /> send CR+LF on Enter</label>
+    <span class="spacer"></span>
+    <span id="status">disconnected</span>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </header>
+  <div id="term"></div>
+  <footer>
+    Connect a serial device (Arduino, ESP32, USB-UART, …). Requires Chrome/Edge
+    over <code>https</code> or <code>localhost</code>. Keystrokes are sent to the
+    port; incoming bytes are rendered by the ferroterm core.
+  </footer>
+
+  <script type="module">
+    import { Ferroterm } from '../web/src/index.js';
+
+    const term = await Ferroterm.create(document.getElementById('term'), {
+      renderer: 'webgl', fontSize: 14, scrollback: 5000, copyOnSelect: true,
+    });
+    term.fit();
+    term.focus();
+
+    const statusEl = document.getElementById('status');
+    const connectBtn = document.getElementById('connect');
+    const disconnectBtn = document.getElementById('disconnect');
+    const baudSel = document.getElementById('baud');
+    const crlf = document.getElementById('crlf');
+
+    const setStatus = (t, cls = '') => { statusEl.textContent = t; statusEl.className = cls; };
+
+    if (!('serial' in navigator)) {
+      setStatus('Web Serial unavailable (use Chrome/Edge)', 'err');
+      connectBtn.disabled = true;
+      term.write('\x1b[33mWeb Serial API not available in this browser.\x1b[0m\r\n');
+    }
+
+    let port = null;
+    let reader = null;
+    let writer = null;
+    let keep = false;
+
+    // Keystrokes -> serial. The core emits UTF-8 bytes; optionally translate a
+    // bare CR into CR+LF for line-based firmware.
+    term.onData((bytes) => {
+      if (!writer) return;
+      let out = bytes;
+      if (crlf.checked) {
+        // Expand 0x0d -> 0x0d 0x0a.
+        const parts = [];
+        for (const b of bytes) { parts.push(b); if (b === 0x0d) parts.push(0x0a); }
+        out = new Uint8Array(parts);
+      }
+      writer.write(out).catch(() => {});
+    });
+
+    async function connect() {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: parseInt(baudSel.value, 10) });
+        writer = port.writable.getWriter();
+        keep = true;
+        connectBtn.disabled = true;
+        disconnectBtn.disabled = false;
+        baudSel.disabled = true;
+        const info = port.getInfo?.() || {};
+        setStatus(`connected @ ${baudSel.value} baud` +
+          (info.usbVendorId ? ` (${info.usbVendorId.toString(16)}:${info.usbProductId.toString(16)})` : ''), 'on');
+        term.write(`\x1b[32m— connected @ ${baudSel.value} baud —\x1b[0m\r\n`);
+        readLoop();
+        term.focus();
+      } catch (e) {
+        setStatus('connect failed: ' + e.message, 'err');
+      }
+    }
+
+    async function readLoop() {
+      reader = port.readable.getReader();
+      try {
+        while (keep) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) term.write(value); // Uint8Array straight into the core
+        }
+      } catch (e) {
+        if (keep) setStatus('read error: ' + e.message, 'err');
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
+    async function disconnect() {
+      keep = false;
+      try { await reader?.cancel(); } catch {}
+      try { writer?.releaseLock(); } catch {}
+      try { await port?.close(); } catch {}
+      port = reader = writer = null;
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+      baudSel.disabled = false;
+      setStatus('disconnected');
+      term.write('\r\n\x1b[31m— disconnected —\x1b[0m\r\n');
+    }
+
+    connectBtn.addEventListener('click', connect);
+    disconnectBtn.addEventListener('click', disconnect);
+    navigator.serial?.addEventListener('disconnect', () => { if (port) disconnect(); });
+  </script>
+</body>
+</html>

@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-07-04
+
+### Added
+- Engine/view split in the web component (`attachView` / `detachView`): a host
+  can keep hundreds of terminals alive while only visible ones hold a renderer.
+- Mouse selection (drag), double-click word and triple-click line selection,
+  right-click context menu (copy/paste/select-all/clear), middle-click paste.
+- Buffer search: `findAll`, `lineText`, `totalLines`, `scrollToLine`.
+- Desktop app: split panes with drag-resizable dividers, multiple windows,
+  find, font zoom, and clear (see the shortcut table in the README).
+- Web Serial demo (`examples/webserial.html`).
+
+### Changed
+- Parser throughput ~130 → ~248 MB/s: release profile tuned for speed
+  (`opt-level = 3`) plus an ASCII bulk fast-path.
+- WebGL renderer: fixed wide/CJK glyph stretching with a variable-width glyph
+  atlas (shelf packer).
+
+### Fixed
+- Bulletproof keyboard focus in embedded webviews (focus on pointer-down and on
+  window focus).
+
 ## [0.1.0] - 2026-07-04
 
 Initial release.
