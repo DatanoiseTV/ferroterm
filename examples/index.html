@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ferroterm — Rust/WASM terminal</title>
+  <link rel="stylesheet" href="../web/ferroterm.css" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      margin: 0; height: 100%;
+      background: #14151f; color: #c0caf5;
+      font: 13px/1.4 -apple-system, system-ui, "Segoe UI", sans-serif;
+    }
+    body { display: flex; flex-direction: column; }
+    header {
+      display: flex; align-items: center; gap: 14px;
+      padding: 8px 14px; border-bottom: 1px solid #24283b; background: #16172099;
+    }
+    header h1 { font-size: 14px; margin: 0; font-weight: 700; letter-spacing: .3px; }
+    header h1 span { color: #7aa2f7; }
+    .controls { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    button, select {
+      background: #1f2335; color: #c0caf5; border: 1px solid #2f334d;
+      border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer;
+    }
+    button:hover { background: #2a2f45; }
+    .stat { color: #9aa5ce; font-variant-numeric: tabular-nums; }
+    .stat b { color: #9ece6a; }
+    #term { flex: 1; padding: 8px; }
+    footer { padding: 6px 14px; color: #565f89; border-top: 1px solid #24283b; }
+    code { color: #e0af68; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ferro<span>term</span></h1>
+    <span class="stat" id="title"></span>
+    <div class="controls">
+      <span class="stat">renderer</span>
+      <select id="renderer">
+        <option value="webgl">WebGL</option>
+        <option value="canvas">Canvas2D</option>
+      </select>
+      <span class="stat">fps <b id="fps">–</b></span>
+    </div>
+  </header>
+  <div id="term"></div>
+  <footer>
+    from-scratch VT100/xterm core in Rust → WebAssembly. Try <code>loadtest</code>,
+    <code>colors</code>, <code>chars</code>, <code>links</code>.
+  </footer>
+
+  <script type="module">
+    import { Ferroterm } from '../web/src/index.js';
+    import { attachShell, runCommand } from './shell.js';
+
+    const params = new URLSearchParams(location.search);
+    const term = await Ferroterm.create(document.getElementById('term'), {
+      renderer: params.get('renderer') || 'webgl',
+      fontSize: 14,
+      scrollback: 5000,
+      copyOnSelect: true,
+    });
+    window.term = term;
+    term.fit();
+    term.focus();
+
+    attachShell(term);
+
+    // Title.
+    const titleEl = document.getElementById('title');
+    term.onTitleChange((t) => (titleEl.textContent = t));
+
+    // Renderer switch.
+    const sel = document.getElementById('renderer');
+    sel.value = term.rendererName?.toLowerCase().includes('webgl') ? 'webgl' : 'canvas';
+    sel.addEventListener('change', () => {
+      term.setRenderer(sel.value);
+      term.focus();
+    });
+
+    // FPS meter.
+    const fpsEl = document.getElementById('fps');
+    let frames = 0, last = performance.now();
+    (function loop(now) {
+      frames++;
+      if (now - last >= 500) {
+        fpsEl.textContent = Math.round((frames * 1000) / (now - last));
+        frames = 0; last = now;
+      }
+      requestAnimationFrame(loop);
+    })(performance.now());
+
+    // Auto-run commands for demos / headless verification: ?run=colors,chars
+    const run = params.get('run');
+    if (run) {
+      for (const cmd of run.split(',')) {
+        term.write(cmd + '\r\n');
+        runCommand(term, cmd.trim());
+      }
+      term.write('ferroterm:~$ ');
+    }
+
+    // Signal for headless verification.
+    window.__ferrotermReady = true;
+  </script>
+</body>
+</html>

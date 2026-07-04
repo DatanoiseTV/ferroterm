@@ -1,0 +1,32 @@
+/* Minimal styles for a ferroterm container. The renderer canvas sizes itself;
+   this just sets up the box and text-selection behavior. */
+.ferroterm {
+  position: relative;
+  overflow: hidden;
+  line-height: 0;
+  -webkit-user-select: none;
+  user-select: none;
+  background: #1a1b26;
+}
+
+.ferroterm .ft-canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+.ferroterm .ft-input {
+  position: absolute;
+  opacity: 0;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  resize: none;
+  outline: none;
+  overflow: hidden;
+  z-index: -5;
+  white-space: nowrap;
+}

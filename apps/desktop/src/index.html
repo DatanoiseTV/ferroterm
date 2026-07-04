@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ferroterm</title>
+  <link rel="stylesheet" href="./ferroterm/ferroterm.css" />
+  <link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+  <div id="titlebar">
+    <div id="tabs"></div>
+    <button id="new-tab" title="New tab (Cmd/Ctrl+T)">+</button>
+    <div id="hud">
+      <span class="hud-item" id="hud-renderer" title="Active renderer">–</span>
+      <span class="hud-item" id="hud-fps" title="Frames per second"><b>–</b> fps</span>
+      <span class="hud-item" id="hud-tput" title="Terminal throughput"><b>0</b> KB/s</span>
+      <span class="hud-item" id="hud-battery" title="Battery"></span>
+    </div>
+  </div>
+  <div id="stack"></div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

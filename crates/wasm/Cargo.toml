@@ -1,0 +1,18 @@
+[package]
+name = "ferroterm-wasm"
+description = "WebAssembly bindings for ferroterm-core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ferroterm-core = { path = "../core" }
+wasm-bindgen = "=0.2.122"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

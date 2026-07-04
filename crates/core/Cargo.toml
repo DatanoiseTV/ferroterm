@@ -1,0 +1,11 @@
+[package]
+name = "ferroterm-core"
+description = "A VT100/xterm-compatible terminal emulator core: ANSI parser, grid buffer, scrollback."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "ferroterm_core"

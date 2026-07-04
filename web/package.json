@@ -1,0 +1,41 @@
+{
+  "name": "ferroterm",
+  "version": "0.1.0",
+  "description": "A fast, secure terminal emulator component: a from-scratch VT100/xterm core in Rust/WebAssembly with Canvas2D and WebGL renderers.",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "types": "./ferroterm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./ferroterm.d.ts",
+      "import": "./src/index.js"
+    },
+    "./style.css": "./ferroterm.css",
+    "./pkg/*": "./pkg/*"
+  },
+  "files": [
+    "src",
+    "pkg",
+    "ferroterm.d.ts",
+    "ferroterm.css",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "terminal",
+    "xterm",
+    "vt100",
+    "ansi",
+    "webassembly",
+    "wasm",
+    "rust",
+    "webgl",
+    "emulator"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DatanoiseTV/ferroterm"
+  }
+}

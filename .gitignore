@@ -1,0 +1,23 @@
+# Rust
+/target
+**/target
+Cargo.lock
+
+# WASM build output (regenerate with ./build.sh)
+/web/pkg
+/apps/desktop/src/ferroterm
+
+# Node
+node_modules
+npm-debug.log*
+
+# Tauri
+/apps/desktop/src-tauri/gen
+/apps/desktop/src-tauri/target
+
+# OS / editor
+.DS_Store
+*.swp
+.idea
+.vscode/*
+!.vscode/extensions.json

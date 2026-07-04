@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/wasm"]
+exclude = ["apps"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/DatanoiseTV/ferroterm"
+authors = ["DatanoiseTV <6614616+DatanoiseTV@users.noreply.github.com>"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

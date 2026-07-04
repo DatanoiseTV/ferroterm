@@ -1,0 +1,15 @@
+{
+  "name": "ferroterm-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A tabbed terminal application built on ferroterm (Tauri).",
+  "type": "module",
+  "scripts": {
+    "sync": "node sync.mjs",
+    "dev": "npm run sync && tauri dev",
+    "build": "npm run sync && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

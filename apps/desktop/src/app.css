@@ -1,0 +1,45 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: #14151f; color: #c0caf5;
+  font: 12px/1.4 -apple-system, system-ui, "Segoe UI", sans-serif;
+  user-select: none;
+}
+body { display: flex; flex-direction: column; }
+
+#titlebar {
+  display: flex; align-items: center; gap: 6px;
+  height: 38px; padding: 0 10px 0 78px; /* leave room for macOS traffic lights */
+  background: #16172099; border-bottom: 1px solid #24283b;
+  -webkit-app-region: drag;
+}
+#titlebar button, #tabs .tab { -webkit-app-region: no-drag; }
+
+#tabs { display: flex; gap: 4px; align-items: center; overflow-x: auto; max-width: 55%; }
+.tab {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-radius: 7px 7px 0 0;
+  background: #1b1e2e; color: #9aa5ce; border: 1px solid transparent;
+  cursor: pointer; white-space: nowrap; font-size: 12px; max-width: 200px;
+}
+.tab .label { overflow: hidden; text-overflow: ellipsis; }
+.tab.active { background: #24283b; color: #c0caf5; }
+.tab .close { opacity: .5; border-radius: 4px; padding: 0 4px; }
+.tab .close:hover { opacity: 1; background: #3b3f5c; }
+
+#new-tab {
+  width: 26px; height: 26px; border-radius: 6px;
+  background: #1f2335; color: #c0caf5; border: 1px solid #2f334d;
+  font-size: 16px; line-height: 1; cursor: pointer;
+}
+#new-tab:hover { background: #2a2f45; }
+
+#hud { margin-left: auto; display: flex; gap: 12px; align-items: center; color: #9aa5ce; }
+.hud-item { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hud-item b { color: #9ece6a; }
+#hud-battery.low b { color: #f7768e; }
+
+#stack { flex: 1; position: relative; }
+.term-pane { position: absolute; inset: 0; padding: 6px; display: none; }
+.term-pane.active { display: block; }
