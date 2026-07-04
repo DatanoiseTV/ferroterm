@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-07-05
+
+### Performance
+- **Incremental WebGL rendering.** The WebGL renderer previously rebuilt every
+  cell's instance data on every frame. It now keeps a persistent GPU buffer with
+  one fixed slot per cell and regenerates + re-uploads only the rows that
+  actually changed (`bufferSubData` of the changed row span), matching the
+  Canvas2D renderer's existing dirty-row behavior. Cursor, underline/strike and
+  hover-link decorations live in a small per-frame overlay drawn on top, so they
+  never dirty the grid. Selection is baked into the cell background and marks
+  only its own rows dirty. Measured on a full 200x50 screen under software GL: a
+  full repaint is unchanged (~0.13 ms), a one-row edit drops to ~0.008 ms (18x),
+  and a cursor-blink frame (no grid change) to ~0.003 ms (54x). This is a CPU /
+  battery win for typical interactive use (typing, cursor, status lines), not a
+  full-screen fps change. Output is pixel-identical to a full re-render for
+  content edits, cursor movement and selection (verified with 0 pixel
+  difference).
+
+### Added
+- **Headless renderer regression tests + CI.** `web/test/` renders a fixed
+  feature-rich scene through both renderers in headless Chrome and asserts
+  semantic per-renderer pixel colors (indexed fg/bg, default, inverse, dim, wide
+  CJK, true color) plus same-renderer determinism and — for WebGL — incremental
+  vs full-render parity. Wired as `npm test` (`CHROME_BIN` overridable). A CI
+  workflow runs `cargo fmt --check` + `clippy -D warnings` + `cargo test` and
+  the headless renderer test under Chromium.
+
 ## [0.4.1] - 2026-07-05
 
 ### Performance

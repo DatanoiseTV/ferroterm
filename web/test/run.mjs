@@ -133,6 +133,14 @@ async function main() {
       if (!detOk) failures++;
     }
 
+    // Incremental (dirty-row) output must match a full re-render exactly.
+    console.log('\n  webgl incremental parity (vs full re-render)');
+    for (const [key, d] of Object.entries(data.incremental)) {
+      const ok = d === 0;
+      console.log(`    ${ok ? 'PASS' : 'FAIL'}  ${key.padEnd(15)} max channel diff ${d}`);
+      if (!ok) failures++;
+    }
+
     console.log(`\n  ${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}\n`);
     cleanup();
     process.exit(failures === 0 ? 0 : 1);

@@ -1,13 +1,20 @@
-// Instanced WebGL renderer. Draws the whole grid with a single instanced draw
-// call: one instance per visible cell, expanded from a shared unit quad in the
-// vertex shader. Each instance carries its pixel rect, foreground and
-// background colors and glyph atlas coords; the fragment shader composites the
-// glyph over the background, so a cell's background and text are one instance
-// (no separate background pass). This writes ~17 floats per cell instead of the
-// 54 floats per quad (and up to two quads per cell) the batched renderer wrote.
+// Instanced WebGL renderer. Draws the grid with per-cell instancing: one
+// instance per cell, expanded from a shared unit quad in the vertex shader.
+// Each instance carries its pixel rect, packed fg/bg colors and glyph atlas
+// coords; the fragment shader composites the glyph over the background, so a
+// cell's background and text are one instance (no separate background pass).
+//
+// Rendering is incremental. A persistent GPU buffer holds one fixed slot per
+// cell, so between frames only the rows that actually changed are regenerated
+// and re-uploaded (bufferSubData of the changed row span); the whole grid is
+// still drawn each frame, but empty/unchanged cells are cheap degenerate
+// instances. Cursor, underline/strike decorations and hover-link underlines
+// live in a small per-frame overlay buffer drawn on top, so a moving cursor or
+// a one-line edit costs a fraction of a full repaint. Selection is baked into
+// the cell background (its rows are marked dirty when the selection changes).
 //
 // Glyphs are rasterized once into a texture atlas (alpha masks for text, full
-// color for emoji), exactly as the batched renderer does.
+// color for emoji).
 //
 // Requires WebGL1 + ANGLE_instanced_arrays (universally available where WebGL
 // is). The constructor throws otherwise, and the host falls back to Canvas2D.
@@ -119,9 +126,9 @@ export class WebGLRenderer {
     this.atlasCanvas = document.createElement('canvas');
     this.atlasCtx = this.atlasCanvas.getContext('2d', { willReadFrequently: false });
     this.glyphCache = new Map();
-    // Instance buffer (aliased float / u32 / byte views) is allocated in resize.
-    this.instAB = null;
-    this.instF = this.instU = this.instBytes = null;
+    // Grid + overlay instance buffers (aliased float/u32/byte views) are
+    // allocated in resize.
+    this.gridAB = this.ovAB = null;
   }
 
   get element() {
@@ -151,7 +158,11 @@ export class WebGLRenderer {
       new Float32Array([0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 1]),
       gl.STATIC_DRAW
     );
-    this.instBuf = gl.createBuffer();
+    // Two GPU buffers: a persistent per-cell grid (updated incrementally, one
+    // fixed slot per cell) and a small per-frame overlay (cursor / decorations
+    // / hover), drawn on top.
+    this.gridGlBuf = gl.createBuffer();
+    this.ovGlBuf = gl.createBuffer();
     this.texture = gl.createTexture();
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -200,14 +211,28 @@ export class WebGLRenderer {
     this.atlasCanvas.height = this.atlasSize;
     this._resetAtlas();
 
-    // One instance per cell, plus a margin for cursor / decoration instances.
-    // Float and u32 views alias one buffer so a cell's rect/tex/tint (floats)
-    // and packed colors (u32) are written into the same interleaved record.
-    const maxInstances = model.cols * model.rows + model.cols + 8;
-    this.instAB = new ArrayBuffer(maxInstances * WORDS_PER_INSTANCE * 4);
-    this.instF = new Float32Array(this.instAB);
-    this.instU = new Uint32Array(this.instAB);
-    this.instBytes = new Uint8Array(this.instAB);
+    // Grid: exactly one instance slot per cell (slot y*cols+x). Persistent, so
+    // clean rows keep their GPU data between frames and only dirty rows are
+    // re-uploaded. Float and u32 views alias the buffer (rect/tex/flags floats,
+    // colors packed u32).
+    const cells = model.cols * model.rows;
+    this.gridAB = new ArrayBuffer(cells * WORDS_PER_INSTANCE * 4);
+    this.gridF = new Float32Array(this.gridAB);
+    this.gridU = new Uint32Array(this.gridAB);
+    this.gridBytes = new Uint8Array(this.gridAB);
+    this._rowBytes = model.cols * WORDS_PER_INSTANCE * 4; // one row's byte span
+
+    // Overlay: cursor + per-cell decorations (underline/strike) + hover. Rebuilt
+    // every frame; sized for the worst case (two decorations per cell).
+    const maxOverlay = cells * 2 + model.cols + 8;
+    this.ovAB = new ArrayBuffer(maxOverlay * WORDS_PER_INSTANCE * 4);
+    this.ovF = new Float32Array(this.ovAB);
+    this.ovU = new Uint32Array(this.ovAB);
+    this.ovBytes = new Uint8Array(this.ovAB);
+
+    this._gridFull = true; // force a full grid rebuild + upload next render
+    this._prevSel = null;
+    this._gridUploaded = false;
   }
 
   _resetAtlas() {
@@ -281,11 +306,9 @@ export class WebGLRenderer {
     return g;
   }
 
-  // Append one instance. `tex` null => background-only (no glyph). `fgP`/`bgP`
-  // are packed RGBA8 (see packRGBA). Writes 11 words at `this._o`.
-  _inst(x, y, w, h, fgP, bgP, tex, tint) {
-    const f = this.instF, u = this.instU;
-    const o = this._o;
+  // Write one instance record (11 words) into `f`/`u` at word offset `o`.
+  // `tex` null => background-only (no glyph); `fgP`/`bgP` are packed RGBA8.
+  _writeInst(f, u, o, x, y, w, h, fgP, bgP, tex, tint) {
     f[o + F_RECT] = x; f[o + F_RECT + 1] = y; f[o + F_RECT + 2] = w; f[o + F_RECT + 3] = h;
     if (tex) {
       f[o + F_TEX] = tex.u0; f[o + F_TEX + 1] = tex.v0; f[o + F_TEX + 2] = tex.u1; f[o + F_TEX + 3] = tex.v1;
@@ -295,133 +318,218 @@ export class WebGLRenderer {
     f[o + F_TINT] = tint;
     u[o + U_FG] = fgP;
     u[o + U_BG] = bgP;
-    this._o = o + WORDS_PER_INSTANCE;
   }
 
-  render(model, _dirtyRows, _full, cursor, selection, hoverLink) {
-    const gl = this.gl;
-    this._o = 0;
-    this._dirtyAtlas = false;
+  // Append an overlay instance (cursor / decoration / hover) at `this._o`.
+  _ov(x, y, w, h, fgP, bgP, tex, tint) {
+    this._writeInst(this.ovF, this.ovU, this._o, x, y, w, h, fgP, bgP, tex, tint);
+    this._o += WORDS_PER_INSTANCE;
+  }
 
+  render(model, dirtyRows, full, cursor, selection, hoverLink) {
+    const gl = this.gl;
     const dpr = this.metrics.dpr;
     const cw = this.metrics.cellW * dpr;
     const ch = this.metrics.cellH * dpr;
+    const cols = model.cols, rows = model.rows;
     const pal = this.palette;
-    const cols = model.cols;
     const bgRgb = pal.bgRgb;
-    const dbr = bgRgb[0] / 255, dbg = bgRgb[1] / 255, dbb = bgRgb[2] / 255;
-    // Default background packed with alpha 0: the clear (same color) shows
-    // through, so default-background cells need no fill.
-    const defBgP = packRGBA(bgRgb[0], bgRgb[1], bgRgb[2], 0);
-    const sel = selection ? this._selCss255() : null; // [r,g,b] 0..255, a 0..1
-    const t = Math.max(1, Math.round(dpr)); // decoration thickness (px)
+    // Render-scoped context read by _genGridRow.
+    this._cwd = cw;
+    this._chd = ch;
+    this._defBgP = packRGBA(bgRgb[0], bgRgb[1], bgRgb[2], 0);
+    this._selArr = selection ? this._selCss255() : null; // [r,g,b] 0..255, a 0..1
+    this._selObj = selection || null;
+    this._dirtyAtlas = false;
 
-    const cpA = model.cp, fgA = model.fg, bgA = model.bg, flagsA = model.flags,
-      graphemeA = model.grapheme;
-
-    for (let y = 0; y < model.rows; y++) {
-      const base = y * cols;
-      const yc = y * ch;
-      const selRange =
-        sel && y >= selection.sy && y <= selection.ey ? this._selSpan(selection, y, cols) : null;
-      for (let x = 0; x < cols; x++) {
-        const i = base + x;
-        const flags = flagsA[i];
-        if (flags & ATTR.WIDE_SPACER) continue;
-        const inverse = (flags & ATTR.INVERSE) !== 0;
-        const cp = cpA[i];
-        const hasGlyph = cp !== 0x20 && cp !== 0 && !(flags & ATTR.INVISIBLE);
-        const selected = selRange && x >= selRange[0] && x < selRange[1];
-
-        // Background, packed RGBA8; alpha 255 only when the cell must be filled.
-        let bgP, filled;
-        if (inverse) {
-          const c = pal.resolveRgb(fgA[i], true, false);
-          bgP = packRGBA(c[0], c[1], c[2], 255); filled = true;
-        } else if (bgA[i] >>> 24 !== 0) {
-          const c = pal.resolveRgb(bgA[i], false, false);
-          bgP = packRGBA(c[0], c[1], c[2], 255); filled = true;
-        } else {
-          bgP = defBgP; filled = false;
-        }
-        if (selected) {
-          // Selection tints the background under the glyph (matches the batched
-          // renderer's translucent overlay). Blend in 0..255, then repack.
-          const sa = sel[3], ia = 1 - sa;
-          bgP = packRGBA(
-            ((bgP & 0xff) * ia + sel[0] * sa) | 0,
-            (((bgP >> 8) & 0xff) * ia + sel[1] * sa) | 0,
-            (((bgP >> 16) & 0xff) * ia + sel[2] * sa) | 0,
-            255
-          );
-          filled = true;
-        }
-
-        // Foreground / glyph.
-        let fgP = 0, glyph = null, tint = 1, fcR = 0, fcG = 0, fcB = 0;
-        if (hasGlyph) {
-          const bold = (flags & ATTR.BOLD) !== 0;
-          const fc = inverse
-            ? pal.resolveRgb(bgA[i], false, false)
-            : pal.resolveRgb(fgA[i], true, bold);
-          fcR = fc[0]; fcG = fc[1]; fcB = fc[2];
-          fgP = packRGBA(fcR, fcG, fcB, flags & ATTR.DIM ? 153 : 255);
-          const cells = flags & ATTR.WIDE ? 2 : 1;
-          const styleBits =
-            (bold ? 1 : 0) | (flags & ATTR.ITALIC ? 2 : 0) | (isColorGlyph(cp) ? 4 : 0);
-          const cluster = graphemeA[i] !== 0 ? model.clusterAt(i) : null;
-          glyph = this._glyph(cp, cluster, styleBits, cells);
-          tint = glyph.tint;
-        }
-
-        if (!filled && !hasGlyph) continue; // nothing to draw
-        const w = flags & ATTR.WIDE ? cw * 2 : cw;
-        this._inst(x * cw, yc, w, ch, fgP, bgP, glyph, tint);
-
-        // Underline / strike / hover-link as thin background-only instances
-        // (color carried in the bg slot), drawn after the cell's glyph.
-        const hovered =
-          hoverLink && hoverLink.y === y && x >= hoverLink.x0 && x <= hoverLink.x1;
-        if (flags & (ATTR.UNDERLINE | ATTR.STRIKETHROUGH) || hovered) {
-          let dcP;
-          if (hasGlyph) dcP = packRGBA(fcR, fcG, fcB, 255);
-          else {
-            const c = pal.resolveRgb(fgA[i], true, false);
-            dcP = packRGBA(c[0], c[1], c[2], 255);
-          }
-          if (flags & ATTR.UNDERLINE || hovered) {
-            this._inst(x * cw, yc + ch - t * 2, w, t, 0, dcP, null, 0);
-          }
-          if (flags & ATTR.STRIKETHROUGH) {
-            this._inst(x * cw, yc + ch * 0.55, w, t, 0, dcP, null, 0);
-          }
-        }
+    // --- Regenerate only the grid rows that changed. ---
+    const doFull = full || this._gridFull || !this._gridUploaded;
+    let minRow = rows, maxRow = -1;
+    if (doFull) {
+      for (let y = 0; y < rows; y++) this._genGridRow(model, y);
+      minRow = 0; maxRow = rows - 1;
+    } else {
+      const dirty = new Set(dirtyRows);
+      for (const y of this._selectionDirtyRows(selection)) dirty.add(y);
+      for (const y of dirty) {
+        if (y < 0 || y >= rows) continue;
+        this._genGridRow(model, y);
+        if (y < minRow) minRow = y;
+        if (y > maxRow) maxRow = y;
       }
     }
+    this._prevSel = selection
+      ? { sx: selection.sx, sy: selection.sy, ex: selection.ex, ey: selection.ey }
+      : null;
 
-    if (cursor.show && cursor.y < model.rows) {
-      this._pushCursor(model, cursor, cw, ch);
-    }
+    // --- Overlay: cursor + decorations + hover, rebuilt every frame. ---
+    this._o = 0;
+    this._genOverlay(model, cw, ch, cursor, hoverLink);
 
     if (this._dirtyAtlas) this._uploadAtlas();
 
-    // Draw.
-    gl.clearColor(dbr, dbg, dbb, 1);
+    // --- Upload grid (whole buffer on a full frame, else just the changed
+    // row span via bufferSubData). ---
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.gridGlBuf);
+    if (doFull) {
+      gl.bufferData(gl.ARRAY_BUFFER, this.gridBytes, gl.DYNAMIC_DRAW);
+      this._gridUploaded = true;
+    } else if (maxRow >= minRow) {
+      const off = minRow * this._rowBytes;
+      const end = (maxRow + 1) * this._rowBytes;
+      gl.bufferSubData(gl.ARRAY_BUFFER, off, this.gridBytes.subarray(off, end));
+    }
+    this._gridFull = false;
+
+    // --- Draw. ---
+    gl.clearColor(bgRgb[0] / 255, bgRgb[1] / 255, bgRgb[2] / 255, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.prog);
     gl.uniform2f(this.loc.uInv, 2 / this.W, 2 / this.H);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.uniform1i(this.loc.uAtlas, 0);
 
-    // Static unit quad.
+    // Static unit quad (shared, non-instanced).
     gl.bindBuffer(gl.ARRAY_BUFFER, this.cornerBuf);
     gl.enableVertexAttribArray(this.loc.aCorner);
     gl.vertexAttribPointer(this.loc.aCorner, 2, gl.FLOAT, false, 0, 0);
     this.ext.vertexAttribDivisorANGLE(this.loc.aCorner, 0);
 
-    // Instance attributes. rect/tex/tint are floats; fg/bg are packed RGBA8
-    // read as normalized UNSIGNED_BYTE, all interleaved in one 44-byte record.
-    const nInst = this._o / WORDS_PER_INSTANCE;
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, this.instBytes.subarray(0, this._o * 4), gl.STREAM_DRAW);
+    // Grid: one instance per cell (empty cells are degenerate, discarded).
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.gridGlBuf);
+    this._bindInstanceAttrs();
+    this.ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, cols * rows);
+
+    // Overlay, on top.
+    const nOv = this._o / WORDS_PER_INSTANCE;
+    if (nOv > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.ovGlBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, this.ovBytes.subarray(0, this._o * 4), gl.STREAM_DRAW);
+      this._bindInstanceAttrs();
+      this.ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, nOv);
+    }
+  }
+
+  // Rows whose selection membership changed since last frame (they must be
+  // regenerated because selection is baked into the cell background).
+  _selectionDirtyRows(cur) {
+    const prev = this._prevSel;
+    const same =
+      (!prev && !cur) ||
+      (prev && cur && prev.sx === cur.sx && prev.sy === cur.sy && prev.ex === cur.ex && prev.ey === cur.ey);
+    if (same) return [];
+    const out = [];
+    if (prev) for (let y = prev.sy; y <= prev.ey; y++) out.push(y);
+    if (cur) for (let y = cur.sy; y <= cur.ey; y++) out.push(y);
+    return out;
+  }
+
+  // Fill row `y`'s grid slots (one instance per cell; empty cells become
+  // degenerate zero-area instances). Selection is baked into the background.
+  _genGridRow(model, y) {
+    const cols = model.cols;
+    const pal = this.palette;
+    const cw = this._cwd, ch = this._chd, defBgP = this._defBgP;
+    const sel = this._selArr, selection = this._selObj;
+    const cpA = model.cp, fgA = model.fg, bgA = model.bg, flagsA = model.flags,
+      graphemeA = model.grapheme;
+    const f = this.gridF, u = this.gridU;
+    const base = y * cols;
+    const yc = y * ch;
+    const selRange =
+      sel && selection && y >= selection.sy && y <= selection.ey
+        ? this._selSpan(selection, y, cols) : null;
+
+    for (let x = 0; x < cols; x++) {
+      const i = base + x;
+      const o = i * WORDS_PER_INSTANCE;
+      const flags = flagsA[i];
+      if (flags & ATTR.WIDE_SPACER) { f[o + F_RECT + 2] = 0; f[o + F_RECT + 3] = 0; continue; }
+      const inverse = (flags & ATTR.INVERSE) !== 0;
+      const cp = cpA[i];
+      const hasGlyph = cp !== 0x20 && cp !== 0 && !(flags & ATTR.INVISIBLE);
+      const selected = selRange && x >= selRange[0] && x < selRange[1];
+
+      let bgP, filled;
+      if (inverse) {
+        const c = pal.resolveRgb(fgA[i], true, false);
+        bgP = packRGBA(c[0], c[1], c[2], 255); filled = true;
+      } else if (bgA[i] >>> 24 !== 0) {
+        const c = pal.resolveRgb(bgA[i], false, false);
+        bgP = packRGBA(c[0], c[1], c[2], 255); filled = true;
+      } else {
+        bgP = defBgP; filled = false;
+      }
+      if (selected) {
+        const sa = sel[3], ia = 1 - sa;
+        bgP = packRGBA(
+          ((bgP & 0xff) * ia + sel[0] * sa) | 0,
+          (((bgP >> 8) & 0xff) * ia + sel[1] * sa) | 0,
+          (((bgP >> 16) & 0xff) * ia + sel[2] * sa) | 0,
+          255
+        );
+        filled = true;
+      }
+
+      let fgP = 0, glyph = null, tint = 1;
+      if (hasGlyph) {
+        const bold = (flags & ATTR.BOLD) !== 0;
+        const fc = inverse
+          ? pal.resolveRgb(bgA[i], false, false)
+          : pal.resolveRgb(fgA[i], true, bold);
+        fgP = packRGBA(fc[0], fc[1], fc[2], flags & ATTR.DIM ? 153 : 255);
+        const cells = flags & ATTR.WIDE ? 2 : 1;
+        const styleBits =
+          (bold ? 1 : 0) | (flags & ATTR.ITALIC ? 2 : 0) | (isColorGlyph(cp) ? 4 : 0);
+        const cluster = graphemeA[i] !== 0 ? model.clusterAt(i) : null;
+        glyph = this._glyph(cp, cluster, styleBits, cells);
+        tint = glyph.tint;
+      }
+
+      if (!filled && !hasGlyph) { f[o + F_RECT + 2] = 0; f[o + F_RECT + 3] = 0; continue; }
+      const w = flags & ATTR.WIDE ? cw * 2 : cw;
+      this._writeInst(f, u, o, x * cw, yc, w, ch, fgP, bgP, glyph, tint);
+    }
+  }
+
+  // Cursor + underline/strike + hover-link, drawn over the grid. Decorations are
+  // thin background-only instances (exactly as the grid pass drew them before),
+  // so scanning for the rare decorated cell is cheap and keeps them pixel-exact.
+  _genOverlay(model, cw, ch, cursor, hoverLink) {
+    const cols = model.cols, rows = model.rows;
+    const pal = this.palette;
+    const flagsA = model.flags, fgA = model.fg, bgA = model.bg, cpA = model.cp;
+    const t = Math.max(1, Math.round(this.metrics.dpr));
+    const DECO = ATTR.UNDERLINE | ATTR.STRIKETHROUGH;
+    for (let y = 0; y < rows; y++) {
+      const base = y * cols;
+      const yc = y * ch;
+      const hoverRow = hoverLink && hoverLink.y === y;
+      for (let x = 0; x < cols; x++) {
+        const i = base + x;
+        const flags = flagsA[i];
+        if (flags & ATTR.WIDE_SPACER) continue;
+        const hovered = hoverRow && x >= hoverLink.x0 && x <= hoverLink.x1;
+        if (!(flags & DECO) && !hovered) continue;
+        const inverse = (flags & ATTR.INVERSE) !== 0;
+        const cp = cpA[i];
+        const hasGlyph = cp !== 0x20 && cp !== 0 && !(flags & ATTR.INVISIBLE);
+        // Match the previous single-pass decoration colour exactly.
+        const c = hasGlyph
+          ? (inverse ? pal.resolveRgb(bgA[i], false, false) : pal.resolveRgb(fgA[i], true, (flags & ATTR.BOLD) !== 0))
+          : pal.resolveRgb(fgA[i], true, false);
+        const dcP = packRGBA(c[0], c[1], c[2], 255);
+        const w = flags & ATTR.WIDE ? cw * 2 : cw;
+        if (flags & ATTR.UNDERLINE || hovered) this._ov(x * cw, yc + ch - t * 2, w, t, 0, dcP, null, 0);
+        if (flags & ATTR.STRIKETHROUGH) this._ov(x * cw, yc + ch * 0.55, w, t, 0, dcP, null, 0);
+      }
+    }
+    if (cursor.show && cursor.y < rows) this._pushCursor(model, cursor, cw, ch);
+  }
+
+  _bindInstanceAttrs() {
+    const gl = this.gl;
     const stride = WORDS_PER_INSTANCE * 4; // 44
     const F = gl.FLOAT, UB = gl.UNSIGNED_BYTE;
     this._bindInstanceAttr(this.loc.aRect, 4, F, false, stride, F_RECT * 4);
@@ -429,11 +537,6 @@ export class WebGLRenderer {
     this._bindInstanceAttr(this.loc.aTint, 1, F, false, stride, F_TINT * 4);
     this._bindInstanceAttr(this.loc.aFg, 4, UB, true, stride, U_FG * 4);
     this._bindInstanceAttr(this.loc.aBg, 4, UB, true, stride, U_BG * 4);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.uniform1i(this.loc.uAtlas, 0);
-    this.ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, nInst);
   }
 
   _bindInstanceAttr(loc, size, type, normalized, stride, offset) {
@@ -454,16 +557,16 @@ export class WebGLRenderer {
     const dpr = this.metrics.dpr;
     if (!cursor.focused) {
       const t = Math.max(1, Math.round(dpr));
-      this._inst(px, py, w, t, 0, cP, null, 0);
-      this._inst(px, py + ch - t, w, t, 0, cP, null, 0);
-      this._inst(px, py, t, ch, 0, cP, null, 0);
-      this._inst(px + w - t, py, t, ch, 0, cP, null, 0);
+      this._ov(px, py, w, t, 0, cP, null, 0);
+      this._ov(px, py + ch - t, w, t, 0, cP, null, 0);
+      this._ov(px, py, t, ch, 0, cP, null, 0);
+      this._ov(px + w - t, py, t, ch, 0, cP, null, 0);
     } else if (style === 'bar') {
       const t = Math.max(1, Math.round(2 * dpr));
-      this._inst(px, py, t, ch, 0, cP, null, 0);
+      this._ov(px, py, t, ch, 0, cP, null, 0);
     } else if (style === 'underline') {
       const t = Math.max(1, Math.round(2 * dpr));
-      this._inst(px, py + ch - t, w, t, 0, cP, null, 0);
+      this._ov(px, py + ch - t, w, t, 0, cP, null, 0);
     } else {
       // Block: fill the cell with the cursor color, then re-draw the glyph in
       // the accent color on top.
@@ -475,9 +578,9 @@ export class WebGLRenderer {
           (flags & ATTR.BOLD ? 1 : 0) | (flags & ATTR.ITALIC ? 2 : 0) | (isColorGlyph(cp) ? 4 : 0);
         const cluster = model.grapheme[i] !== 0 ? model.clusterAt(i) : null;
         const g = this._glyph(cp, cluster, styleBits, cells);
-        this._inst(px, py, w, ch, caP, cP, g, g.tint);
+        this._ov(px, py, w, ch, caP, cP, g, g.tint);
       } else {
-        this._inst(px, py, w, ch, 0, cP, null, 0);
+        this._ov(px, py, w, ch, 0, cP, null, 0);
       }
     }
   }
@@ -513,7 +616,8 @@ export class WebGLRenderer {
 
   dispose() {
     const gl = this.gl;
-    gl.deleteBuffer(this.instBuf);
+    gl.deleteBuffer(this.gridGlBuf);
+    gl.deleteBuffer(this.ovGlBuf);
     gl.deleteBuffer(this.cornerBuf);
     gl.deleteTexture(this.texture);
     gl.deleteProgram(this.prog);

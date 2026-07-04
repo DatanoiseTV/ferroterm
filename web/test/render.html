@@ -104,7 +104,52 @@
           t.detachView();
         }
 
-        window.__results = { theme: THEME, results };
+        // Incremental parity: the WebGL renderer updates only changed rows
+        // between frames. Drive a content change, a cursor move, and a
+        // selection through the incremental path and assert each matches a
+        // forced full re-render of the same state (0 pixel difference).
+        function incrementalParity() {
+          const host = document.createElement('div');
+          document.body.appendChild(host);
+          const t = new Ferroterm({ cols: 30, rows: 8, renderer: 'webgl', fontSize: 16, autoFit: false, cursorBlink: false });
+          t.attachView(host);
+          let s = '';
+          for (let r = 0; r < 8; r++) s += `\x1b[3${r % 8}mrow ${r} abc \x1b[7minv\x1b[0m \x1b[4mul\x1b[0m def\r\n`;
+          t.write(s);
+          t._forceNext = true; t._frame();
+          const grab = () => {
+            const rc = t.renderer.element;
+            const c = document.createElement('canvas'); c.width = rc.width; c.height = rc.height;
+            const g = c.getContext('2d'); g.drawImage(rc, 0, 0);
+            return g.getImageData(0, 0, rc.width, rc.height).data;
+          };
+          const diff = (a, b) => { let m = 0; for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(a[i] - b[i])); return m; };
+          const cur = () => ({ x: t.model.cursorX, y: t.model.cursorY, show: true, style: 'block', focused: true });
+          const R = t.model ? t.renderer : null;
+          const out = {};
+          // Content change through the real snapshot/dirty-row path.
+          t.write('\x1b[4;1H\x1b[2K\x1b[35mchanged row 4 \x1b[42mbg\x1b[0m');
+          t._frame(); const a1 = grab();
+          t._forceNext = true; t._frame(); const a2 = grab();
+          out.content = diff(a1, a2);
+          // Cursor overlay (no grid change).
+          t.write('\x1b[2;6H');
+          R.render(t.model, [], false, cur(), null, null); const b1 = grab();
+          R.render(t.model, [], true, cur(), null, null); const b2 = grab();
+          out.cursor = diff(b1, b2);
+          // Selection set, then cleared.
+          const sel = { sx: 2, sy: 1, ex: 12, ey: 3 };
+          R.render(t.model, [], false, cur(), sel, null); const c1 = grab();
+          R.render(t.model, [], true, cur(), sel, null); const c2 = grab();
+          out.selection = diff(c1, c2);
+          R.render(t.model, [], false, cur(), null, null); const d1 = grab();
+          R.render(t.model, [], true, cur(), null, null); const d2 = grab();
+          out.selectionClear = diff(d1, d2);
+          t.detachView();
+          return out;
+        }
+
+        window.__results = { theme: THEME, results, incremental: incrementalParity() };
         window.__done = true;
       } catch (e) {
         window.__error = (e && e.stack) || String(e);
