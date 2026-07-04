@@ -10,9 +10,9 @@ body { display: flex; flex-direction: column; }
 
 #titlebar {
   display: flex; align-items: center; gap: 6px;
-  height: 38px; padding: 0 10px 0 78px; /* leave room for macOS traffic lights */
-  background: #16172099; border-bottom: 1px solid #24283b;
-  -webkit-app-region: drag;
+  height: 38px; padding: 0 10px 0 82px; /* leave room for macOS traffic lights */
+  background: #181a26; border-bottom: 1px solid #24283b;
+  -webkit-app-region: drag; position: relative; z-index: 10;
 }
 #titlebar button, #tabs .tab { -webkit-app-region: no-drag; }
 

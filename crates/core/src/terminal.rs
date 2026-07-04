@@ -149,6 +149,40 @@ impl Terminal {
         (c.x, c.y)
     }
 
+    // --- text access (search / scraping) -----------------------------------
+
+    /// Total number of logical lines: scrollback history plus the screen.
+    pub fn total_lines(&self) -> usize {
+        self.scrollback.len() + self.rows()
+    }
+
+    /// Text of logical line `abs` (0 = oldest scrollback line). Wide-glyph
+    /// spacer cells are skipped so the string reads naturally.
+    pub fn line_text(&self, abs: usize) -> String {
+        let back = self.scrollback.len();
+        let line = if abs < back {
+            &self.scrollback[abs]
+        } else {
+            self.buf().line((abs - back).min(self.rows() - 1))
+        };
+        line.iter()
+            .filter(|c| !c.pen.has(attr::WIDE_SPACER))
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    /// Scroll the viewport so logical line `abs` is at the top.
+    pub fn scroll_to_line(&mut self, abs: usize) {
+        let back = self.scrollback.len();
+        let off = back.saturating_sub(abs).min(back);
+        if off != self.display_offset {
+            self.display_offset = off;
+            self.viewport_full = true;
+        }
+    }
+
     /// Resolve an OSC 8 link id to its URI.
     pub fn link_uri(&self, id: u32) -> Option<&str> {
         if id == 0 {
@@ -733,6 +767,59 @@ fn parse_ext_color(params: &Params, i: usize) -> Option<(Color, usize)> {
 impl Perform for Terminal {
     fn print(&mut self, c: char) {
         self.write_char(c);
+    }
+
+    /// Fast path for runs of printable ASCII (all width-1). Fills whole spans of
+    /// a line in a tight loop instead of dispatching per character.
+    fn print_ascii(&mut self, mut bytes: &[u8]) {
+        if self.modes.insert {
+            for &b in bytes {
+                self.write_char(b as char);
+            }
+            return;
+        }
+        let cols = self.cols();
+        let autowrap = self.modes.autowrap;
+        let pen = self.pen;
+        let link = self.cur_link;
+        while !bytes.is_empty() {
+            if self.buf().cursor.pending_wrap && autowrap {
+                self.buf_mut().cursor.pending_wrap = false;
+                self.carriage_return();
+                self.linefeed();
+            }
+            let (x, y) = {
+                let c = self.buf().cursor;
+                (c.x, c.y)
+            };
+            let space = cols - x;
+            let n = space.min(bytes.len());
+            {
+                let line = self.buf_mut().line_mut(y);
+                for (k, &b) in bytes[..n].iter().enumerate() {
+                    line[x + k] = Cell {
+                        ch: b as char,
+                        pen,
+                        link,
+                    };
+                }
+            }
+            bytes = &bytes[n..];
+            let buf = self.buf_mut();
+            let nx = x + n;
+            if nx >= cols {
+                buf.cursor.x = cols - 1;
+                buf.cursor.pending_wrap = autowrap;
+                if bytes.is_empty() {
+                    break;
+                }
+                // Bytes remain: if autowrap, the next iteration wraps via the
+                // pending flag; if not, it overwrites the last column.
+            } else {
+                buf.cursor.x = nx;
+                break;
+            }
+        }
     }
 
     fn execute(&mut self, byte: u8) {

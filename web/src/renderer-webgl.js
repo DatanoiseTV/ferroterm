@@ -145,13 +145,12 @@ export class WebGLRenderer {
     this.gcw = Math.ceil(cellW * dpr);
     this.gch = Math.ceil(cellH * dpr);
     this.atlasSize = 2048;
-    this.cols_atlas = Math.max(1, Math.floor(this.atlasSize / this.gcw));
     this.atlasCanvas.width = this.atlasSize;
     this.atlasCanvas.height = this.atlasSize;
     this._resetAtlas();
 
-    // Vertex scratch: max 2 quads/cell + cursor.
-    const maxQuads = model.cols * model.rows * 2 + 8;
+    // Vertex scratch: up to 3 quads/cell (bg + glyph + underline) + cursor.
+    const maxQuads = model.cols * model.rows * 3 + 8;
     this.verts = new Float32Array(maxQuads * VERTS_PER_QUAD * FLOATS_PER_VERT);
   }
 
@@ -162,8 +161,27 @@ export class WebGLRenderer {
     ctx.textBaseline = 'alphabetic';
     this._atlasFont = { fontFamily, fontSize: fontSize * dpr, baseline: baseline * dpr };
     this.glyphCache.clear();
-    this.nextSlot = 0;
+    // Shelf packer: variable-width slots (a wide glyph needs 2 cells) laid out
+    // left-to-right in rows of height `gch`.
+    this._shelfX = 0;
+    this._shelfY = 0;
     this._uploadAtlas();
+  }
+
+  // Reserve a `w`-px wide slot in the atlas; returns its top-left {x, y}.
+  _allocSlot(w) {
+    if (this._shelfX + w > this.atlasSize) {
+      this._shelfX = 0;
+      this._shelfY += this.gch;
+    }
+    if (this._shelfY + this.gch > this.atlasSize) {
+      // Atlas full: reset (rare; only with a huge glyph variety).
+      this._resetAtlas();
+    }
+    const x = this._shelfX;
+    const y = this._shelfY;
+    this._shelfX += w;
+    return { x, y };
   }
 
   _uploadAtlas() {
@@ -177,37 +195,32 @@ export class WebGLRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
-  _glyph(cp, bold, italic, color) {
-    const key = (cp << 3) | (bold ? 1 : 0) | (italic ? 2 : 0) | (color ? 4 : 0);
+  // `cells` is 1 or 2 (double-width glyphs occupy two columns). The atlas slot
+  // is sized to the glyph's real width so wide glyphs are never squashed into a
+  // single cell and then stretched.
+  _glyph(cp, bold, italic, color, cells) {
+    const key = (cp << 4) | (bold ? 1 : 0) | (italic ? 2 : 0) | (color ? 4 : 0) | (cells === 2 ? 8 : 0);
     let g = this.glyphCache.get(key);
     if (g) return g;
 
-    const slotsPerRow = this.cols_atlas;
-    const maxSlots = slotsPerRow * Math.floor(this.atlasSize / this.gch);
-    if (this.nextSlot >= maxSlots) {
-      // Atlas full: reset (rare; only with a huge glyph variety).
-      this._resetAtlas();
-    }
-    const slot = this.nextSlot++;
-    const col = slot % slotsPerRow;
-    const row = Math.floor(slot / slotsPerRow);
-    const x = col * this.gcw;
-    const y = row * this.gch;
+    const slotW = this.gcw * cells;
+    const { x, y } = this._allocSlot(slotW);
 
     const ctx = this.atlasCtx;
-    ctx.clearRect(x, y, this.gcw, this.gch);
+    ctx.clearRect(x, y, slotW, this.gch);
     let font = '';
     if (italic) font += 'italic ';
     if (bold) font += 'bold ';
     font += `${this._atlasFont.fontSize}px ${this._atlasFont.fontFamily}`;
     ctx.font = font;
-    ctx.fillStyle = color ? '#ffffff' : '#ffffff'; // color glyphs render native
+    ctx.fillStyle = '#ffffff'; // color glyphs (emoji) render in their own colors
+    // Draw at the slot origin; the glyph keeps its natural advance width.
     ctx.fillText(String.fromCodePoint(cp), x, y + this._atlasFont.baseline);
 
     g = {
       u0: x / this.atlasSize,
       v0: y / this.atlasSize,
-      u1: (x + this.gcw) / this.atlasSize,
+      u1: (x + slotW) / this.atlasSize,
       v1: (y + this.gch) / this.atlasSize,
       tint: color ? 0 : 1,
     };
@@ -288,12 +301,13 @@ export class WebGLRenderer {
         const italic = (flags & ATTR.ITALIC) !== 0;
         const inverse = (flags & ATTR.INVERSE) !== 0;
         const color = isColorGlyph(cp);
-        const g = this._glyph(cp, bold, italic, color);
+        const cells = flags & ATTR.WIDE ? 2 : 1;
+        const g = this._glyph(cp, bold, italic, color, cells);
         const fg = inverse
           ? this.palette.resolveRgb(model.bg[i], false, false)
           : this.palette.resolveRgb(model.fg[i], true, bold);
         const a = flags & ATTR.DIM ? 0.6 : 1;
-        const w = flags & ATTR.WIDE ? cw * 2 : cw;
+        const w = cw * cells;
         this._quad(x * cw, y * ch, w, ch, fg[0] / 255, fg[1] / 255, fg[2] / 255, a, g, g.tint);
         // Underline / hover-link / strikethrough as thin quads.
         const hovered = hoverLink && hoverLink.y === y && x >= hoverLink.x0 && x <= hoverLink.x1;
@@ -365,8 +379,9 @@ export class WebGLRenderer {
       const cp = model.cp[i];
       if (cp !== 0x20 && cp !== 0) {
         const ca = this._cursorAccentRgb();
-        const g = this._glyph(cp, (flags & ATTR.BOLD) !== 0, (flags & ATTR.ITALIC) !== 0, false);
-        this._quad(px, py, w, ch, ca[0], ca[1], ca[2], 1, g, 1);
+        const cells = flags & ATTR.WIDE ? 2 : 1;
+        const g = this._glyph(cp, (flags & ATTR.BOLD) !== 0, (flags & ATTR.ITALIC) !== 0, isColorGlyph(cp), cells);
+        this._quad(px, py, w, ch, ca[0], ca[1], ca[2], 1, g, g.tint);
       }
     }
   }

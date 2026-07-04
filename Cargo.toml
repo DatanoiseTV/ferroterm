@@ -10,9 +10,13 @@ license = "MIT"
 repository = "https://github.com/DatanoiseTV/ferroterm"
 authors = ["DatanoiseTV <6614616+DatanoiseTV@users.noreply.github.com>"]
 
+# Tuned for throughput: the parser is a hot per-byte loop, so we optimize for
+# speed (opt-level 3) rather than size. LTO + a single codegen unit let the
+# parser, grid and terminal inline across module boundaries. `panic = "abort"`
+# drops unwinding tables (smaller, and we never catch_unwind in the core).
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level = 3
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true

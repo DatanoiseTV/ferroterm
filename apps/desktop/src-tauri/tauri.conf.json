@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Ferroterm",
+        "title": "",
         "width": 1000,
         "height": 660,
         "minWidth": 480,

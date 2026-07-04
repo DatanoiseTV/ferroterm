@@ -103,6 +103,14 @@ impl Params {
 pub trait Perform {
     /// A printable character was decoded (already UTF-8 decoded, >= U+0020).
     fn print(&mut self, c: char);
+    /// A run of printable ASCII bytes (0x20..0x7e). The default forwards to
+    /// [`print`]; implementors can override for a faster bulk path. This is the
+    /// hot path for ordinary text output.
+    fn print_ascii(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.print(b as char);
+        }
+    }
     /// A C0/C1 control byte to execute (BEL, BS, HT, LF, CR, ...).
     fn execute(&mut self, byte: u8);
     /// A final CSI byte: `ESC [ params intermediates action`.
@@ -163,9 +171,30 @@ impl Parser {
     }
 
     /// Feed a chunk of bytes, driving callbacks on `perform`.
+    ///
+    /// Fast path: while in the ground state with no pending UTF-8, a run of
+    /// printable ASCII is handed to [`Perform::print_ascii`] in one call,
+    /// skipping the per-byte state machine for ordinary text (the common case).
     pub fn advance<P: Perform>(&mut self, perform: &mut P, bytes: &[u8]) {
-        for &b in bytes {
-            self.step(perform, b);
+        let len = bytes.len();
+        let mut i = 0;
+        while i < len {
+            if self.state == State::Ground && self.utf8_remaining == 0 {
+                let start = i;
+                while i < len {
+                    let b = bytes[i];
+                    if b < 0x20 || b >= 0x7f {
+                        break;
+                    }
+                    i += 1;
+                }
+                if i > start {
+                    perform.print_ascii(&bytes[start..i]);
+                    continue;
+                }
+            }
+            self.step(perform, bytes[i]);
+            i += 1;
         }
     }
 

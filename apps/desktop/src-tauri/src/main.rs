@@ -5,6 +5,12 @@
 mod battery;
 mod pty;
 
+/// Bridge for front-end diagnostics to land in the dev console / stderr.
+#[tauri::command]
+fn debug_log(msg: String) {
+    eprintln!("[js] {msg}");
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(pty::PtyManager::default())
@@ -14,6 +20,7 @@ fn main() {
             pty::pty_resize,
             pty::pty_kill,
             battery::battery_status,
+            debug_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ferroterm desktop");

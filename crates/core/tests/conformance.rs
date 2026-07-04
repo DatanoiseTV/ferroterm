@@ -215,6 +215,45 @@ fn backspace_and_tab() {
 }
 
 #[test]
+fn ascii_fast_path_wraps_across_lines() {
+    // 20 cols: a 45-char run must fill row 0, wrap to row 1, then row 2.
+    let mut t = term();
+    let s: String = (0..45).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+    t.feed(s.as_bytes());
+    assert_eq!(&row_text(&t, 0)[..20], &s[..20]);
+    assert_eq!(&row_text(&t, 1)[..20], &s[20..40]);
+    assert_eq!(&row_text(&t, 2)[..5], &s[40..45]);
+    assert_eq!(t.cursor(), (5, 2));
+}
+
+#[test]
+fn ascii_fast_path_matches_per_char() {
+    // The batched path must produce the same grid as byte-by-byte feeding.
+    let mut a = Terminal::new(12, 4, 50);
+    let mut b = Terminal::new(12, 4, 50);
+    let text = b"the quick brown fox jumps over the lazy dog 0123456789";
+    a.feed(text);
+    for &byte in text {
+        b.feed(&[byte]);
+    }
+    for y in 0..4 {
+        assert_eq!(row_text(&a, y), row_text(&b, y), "row {y} differs");
+    }
+    assert_eq!(a.cursor(), b.cursor());
+}
+
+#[test]
+fn line_text_reads_scrollback() {
+    let mut t = term();
+    for i in 0..10 {
+        t.feed(format!("row{}\r\n", i).as_bytes());
+    }
+    // Oldest lines are in scrollback; line 0 should be "row0".
+    assert!(t.total_lines() >= 10);
+    assert_eq!(t.line_text(0), "row0");
+}
+
+#[test]
 fn malicious_long_params_do_not_panic() {
     let mut t = term();
     let mut s = b"\x1b[".to_vec();

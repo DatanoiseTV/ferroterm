@@ -105,6 +105,23 @@ impl Terminal {
         self.inner.scroll_to_bottom();
     }
 
+    #[wasm_bindgen(js_name = scrollToLine)]
+    pub fn scroll_to_line(&mut self, abs: usize) {
+        self.inner.scroll_to_line(abs);
+    }
+
+    // --- text access for search --------------------------------------------
+
+    #[wasm_bindgen(js_name = totalLines)]
+    pub fn total_lines(&self) -> usize {
+        self.inner.total_lines()
+    }
+
+    #[wasm_bindgen(js_name = lineText)]
+    pub fn line_text(&self, abs: usize) -> String {
+        self.inner.line_text(abs)
+    }
+
     #[wasm_bindgen(js_name = scrollbackLen)]
     pub fn scrollback_len(&self) -> usize {
         self.inner.scrollback_len()

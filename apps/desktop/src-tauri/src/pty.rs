@@ -66,7 +66,11 @@ pub fn pty_spawn(
         cmd.cwd(dir);
     }
 
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    eprintln!("[pty] spawn id={id} shell={shell} {cols}x{rows}");
+    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+        eprintln!("[pty] spawn FAILED: {e}");
+        e.to_string()
+    })?;
     // Drop the slave now that the child owns it, so EOF is detected on exit.
     drop(pair.slave);
 

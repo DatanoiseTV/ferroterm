@@ -82,7 +82,7 @@ async function newTab() {
   term.onTitleChange((t) => {
     entry.title = t || 'shell';
     labelEl.textContent = entry.title;
-    if (id === activeId) document.title = `${entry.title} — Ferroterm`;
+    labelEl.title = entry.title;
   });
 
   term.focus();
@@ -97,7 +97,6 @@ function activate(id) {
     t.tabEl.classList.toggle('active', t.id === id);
   }
   activeId = id;
-  document.title = `${entry.title} — Ferroterm`;
   entry.term.fit();
   entry.term.focus();
   updateRendererHud();
