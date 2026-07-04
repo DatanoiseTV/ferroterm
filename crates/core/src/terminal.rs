@@ -120,6 +120,36 @@ pub struct Terminal {
     default_cursor: (u8, u8, u8),
     /// Bumped on every palette change so the front-end knows to re-read.
     palette_version: u32,
+
+    /// Decoded Sixel images, anchored in absolute line-serial space so they
+    /// scroll with the text they were drawn under.
+    images: Vec<ImageRec>,
+    next_image_id: u32,
+    /// Bumped whenever the image set changes (added / pruned), so the front-end
+    /// knows to re-sync its texture cache.
+    images_version: u32,
+    /// Total number of lines that have scrolled off the top of the primary
+    /// screen over the terminal's lifetime. The current top visible primary row
+    /// has this serial; an image's fixed serial minus this gives its row.
+    scrolled_off: i64,
+    /// Cell size in device pixels, set by the front-end. Sixel images are laid
+    /// out and advance the cursor in whole cells using this.
+    cell_px_w: usize,
+    cell_px_h: usize,
+}
+
+/// A placed Sixel image.
+struct ImageRec {
+    id: u32,
+    /// Absolute line serial of the image's top row (see `scrolled_off`).
+    serial: i64,
+    /// Left column (cell) of the image.
+    col: usize,
+    width: usize,
+    height: usize,
+    /// Height in whole cells (for scroll/prune math).
+    rows_cells: usize,
+    rgba: Vec<u8>,
 }
 
 impl Terminal {
@@ -156,6 +186,12 @@ impl Terminal {
             default_bg: (0x1a, 0x1b, 0x26),
             default_cursor: (0xe6, 0xe6, 0xe6),
             palette_version: 0,
+            images: Vec::new(),
+            next_image_id: 1,
+            images_version: 0,
+            scrolled_off: 0,
+            cell_px_w: 8,
+            cell_px_h: 16,
         }
     }
 
@@ -624,12 +660,17 @@ impl Terminal {
         if evict {
             let mut evicted: Vec<Line> = Vec::new();
             self.primary.scroll_up(n, pen, Some(&mut evicted));
+            let count = evicted.len();
             for line in evicted {
                 self.scrollback.push_back(line);
                 while self.scrollback.len() > self.max_scrollback {
                     self.scrollback.pop_front();
                 }
             }
+            // The primary screen scrolled: advance the absolute line serial and
+            // drop images that have fallen out of retained history.
+            self.scrolled_off += count as i64;
+            self.prune_images();
         } else {
             self.buf_mut().scroll_up(n, pen, None);
         }
@@ -992,6 +1033,12 @@ impl Terminal {
         self.palette_bg = None;
         self.palette_cursor = None;
         self.palette_version += 1;
+        // Drop all images and reset the line serial.
+        if !self.images.is_empty() {
+            self.images.clear();
+            self.images_version = self.images_version.wrapping_add(1);
+        }
+        self.scrolled_off = 0;
     }
 
     /// A monotonically increasing counter bumped whenever the dynamic palette
@@ -1031,6 +1078,124 @@ impl Terminal {
         self.default_fg = unpack(fg);
         self.default_bg = unpack(bg);
         self.default_cursor = unpack(cursor);
+    }
+
+    // --- Sixel images -------------------------------------------------------
+
+    /// Set the cell size in device pixels (from the front-end's font metrics),
+    /// so Sixel images can be laid out and advance the cursor in whole cells.
+    pub fn set_cell_pixels(&mut self, w: usize, h: usize) {
+        self.cell_px_w = w.max(1);
+        self.cell_px_h = h.max(1);
+    }
+
+    /// Anchor a decoded image at the cursor and move the cursor below it.
+    fn place_image(&mut self, img: crate::sixel::SixelImage) {
+        let rows_cells = img.height.div_ceil(self.cell_px_h).max(1);
+        let col = self.buf().cursor.x;
+        // Absolute serial of the cursor's row (primary screen only; on the alt
+        // screen serials are still consistent because it doesn't evict).
+        let serial = self.scrolled_off + self.buf().cursor.y as i64;
+
+        let id = self.next_image_id;
+        self.next_image_id = self.next_image_id.wrapping_add(1).max(1);
+        self.images.push(ImageRec {
+            id,
+            serial,
+            col,
+            width: img.width,
+            height: img.height,
+            rows_cells,
+            rgba: img.rgba,
+        });
+        self.images_version = self.images_version.wrapping_add(1);
+        // Bound the number of live images.
+        if self.images.len() > 256 {
+            self.images.remove(0);
+        }
+
+        // Move the cursor to the start of the line just below the image,
+        // scrolling as needed (sixel scrolling mode).
+        for _ in 0..rows_cells {
+            self.linefeed();
+        }
+        self.carriage_return();
+    }
+
+    /// Drop images that have scrolled entirely out of retained scrollback.
+    fn prune_images(&mut self) {
+        let oldest = self.scrolled_off - self.max_scrollback as i64;
+        let before = self.images.len();
+        self.images
+            .retain(|im| im.serial + im.rows_cells as i64 > oldest);
+        if self.images.len() != before {
+            self.images_version = self.images_version.wrapping_add(1);
+        }
+    }
+
+    /// Drop images whose rows intersect the current primary screen (used by
+    /// full-screen erase / alt-screen switch).
+    fn clear_screen_images(&mut self) {
+        let top = self.scrolled_off;
+        let bottom = self.scrolled_off + self.rows() as i64;
+        let before = self.images.len();
+        self.images
+            .retain(|im| im.serial + im.rows_cells as i64 <= top || im.serial >= bottom);
+        if self.images.len() != before {
+            self.images_version = self.images_version.wrapping_add(1);
+        }
+    }
+
+    /// Counter bumped whenever the image set changes; the front-end re-syncs its
+    /// texture cache when it differs.
+    pub fn images_version(&self) -> u32 {
+        self.images_version
+    }
+
+    /// Live image ids, in draw order (oldest first).
+    pub fn image_ids(&self) -> Vec<u32> {
+        self.images.iter().map(|im| im.id).collect()
+    }
+
+    /// RGBA bytes of image `id` (`width*height*4`), or empty if gone.
+    pub fn image_rgba(&self, id: u32) -> Vec<u8> {
+        self.images
+            .iter()
+            .find(|im| im.id == id)
+            .map(|im| im.rgba.clone())
+            .unwrap_or_default()
+    }
+
+    /// `(width, height)` in pixels of image `id`, or `(0, 0)`.
+    pub fn image_size(&self, id: u32) -> Vec<u32> {
+        self.images
+            .iter()
+            .find(|im| im.id == id)
+            .map(|im| vec![im.width as u32, im.height as u32])
+            .unwrap_or_else(|| vec![0, 0])
+    }
+
+    /// Current placement of every live image relative to the visible viewport,
+    /// flat `[id, viewport_row, col, width_px, height_px] …`. `viewport_row` is
+    /// the cell row of the image's top edge (may be negative / off-screen); the
+    /// front-end multiplies by the cell size for the pixel offset. Recomputed
+    /// each frame so images track scrolling.
+    pub fn image_placements(&self) -> Vec<i32> {
+        // Images belong to the primary screen; hide them while the alternate
+        // screen is active (they reappear on return since serials are absolute).
+        if self.alt_active {
+            return Vec::new();
+        }
+        let top_serial = self.scrolled_off - self.display_offset as i64;
+        let mut out = Vec::with_capacity(self.images.len() * 5);
+        for im in &self.images {
+            out.push(im.id as i32);
+            out.push((im.serial - top_serial) as i32);
+            out.push(im.col as i32);
+            out.push(im.width as i32);
+            out.push(im.height as i32);
+        }
+        out
     }
 
     /// Resolve a grapheme-cluster id (as emitted in the snapshot) to its full
@@ -1359,7 +1524,12 @@ impl Perform for Terminal {
                 match params.get(0, 0) {
                     0 => self.buf_mut().erase_below(pen),
                     1 => self.buf_mut().erase_above(pen),
-                    2 | 3 => self.buf_mut().erase_all(pen),
+                    2 | 3 => {
+                        self.buf_mut().erase_all(pen);
+                        if !self.alt_active {
+                            self.clear_screen_images();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1446,5 +1616,11 @@ impl Perform for Terminal {
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell: bool) {
         self.osc(params, bell);
+    }
+
+    fn dcs_dispatch(&mut self, data: &[u8], _truncated: bool) {
+        if let Some(img) = crate::sixel::decode(data) {
+            self.place_image(img);
+        }
     }
 }

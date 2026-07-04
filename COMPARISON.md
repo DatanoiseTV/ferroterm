@@ -62,6 +62,9 @@ addon.
 | 256-color / true color | yes | yes |
 | Wide (CJK) glyphs | yes | yes |
 | Combining marks / ZWJ grapheme clusters | yes | yes |
+| Reflow (rewrap) on resize | yes | yes |
+| Dynamic palette (OSC 4/10/11) | yes | yes |
+| Sixel graphics | yes (built in) | addon |
 | OSC 8 hyperlinks | yes (built in) | yes |
 | Auto URL link detection | yes (built in) | addon |
 | Search | yes (built in) | addon |

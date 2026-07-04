@@ -74,6 +74,8 @@ function run(term, cmd) {
       return chars(term);
     case 'links':
       return links(term);
+    case 'sixel':
+      return sixel(term);
     case 'loadtest':
       return loadtest(term, parseInt(args[0], 10) || 2);
     case 'bench':
@@ -95,6 +97,7 @@ function help(term) {
       '  ' + c('1;33', 'colors') + '    print the 256-color palette',
       '  ' + c('1;33', 'chars') + '     print styles & unicode / wide glyphs',
       '  ' + c('1;33', 'links') + '     print clickable hyperlinks (OSC 8 + auto)',
+      '  ' + c('1;33', 'sixel') + '     draw a Sixel image (graphics)',
       '  ' + c('1;33', 'loadtest') + ' [MB]  stream N MB and report MB/s',
       '  ' + c('1;33', 'benchmark') + ' [MB] full suite: parse scenarios + renderer paint',
       '  ' + c('1;33', 'clear') + '     clear the screen',
@@ -149,6 +152,69 @@ function links(term) {
       '',
     ].join('\r\n') + '\r\n'
   );
+}
+
+// Draws a Sixel image: a smooth 64x48 HSV gradient plus color bands, to show
+// the graphics pipeline (DCS Sixel -> decode -> overlay render).
+function sixel(term) {
+  const W = 64, H = 48; // pixels; H must be a multiple of 6
+  // Build an RGB palette (colors 1..N) and paint per-column sixel data.
+  const bands = H / 6;
+  let out = '\x1bPq"1;1;' + W + ';' + H;
+  // Define 32 palette colors as a hue sweep.
+  const N = 32;
+  for (let i = 0; i < N; i++) {
+    const h = (i / N) * 360;
+    const [r, g, b] = hsvToPct(h, 100, 100);
+    out += `#${i + 1};2;${r};${g};${b}`;
+  }
+  for (let band = 0; band < bands; band++) {
+    // For each color, emit the columns that use it on this band (all 6 rows on).
+    for (let ci = 0; ci < N; ci++) {
+      out += `#${ci + 1}`;
+      let run = '';
+      for (let x = 0; x < W; x++) {
+        // color index depends on x (horizontal hue) and band (vertical shade).
+        const idx = ((x * N / W) | 0);
+        run += idx === ci ? '~' : '?'; // '~'=all six rows, '?'=none
+      }
+      out += rle(run);
+      out += '$'; // graphics CR: overlay next color on the same band
+    }
+    out += '-'; // next band
+  }
+  out += '\x1b\\';
+  term.write('A Sixel image (64x48):\r\n');
+  term.write(out);
+  term.write('\r\n');
+}
+
+// Run-length encode a sixel row string using the `!Pn` repeat form.
+function rle(s) {
+  let o = '';
+  let i = 0;
+  while (i < s.length) {
+    let j = i;
+    while (j < s.length && s[j] === s[i]) j++;
+    const n = j - i;
+    o += n >= 4 ? `!${n}${s[i]}` : s.slice(i, j);
+    i = j;
+  }
+  return o;
+}
+
+function hsvToPct(h, s, v) {
+  s /= 100; v /= 100;
+  const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c;
+  let r = 0, g = 0, b = 0;
+  const seg = (h / 60) | 0;
+  if (seg === 0) [r, g, b] = [c, x, 0];
+  else if (seg === 1) [r, g, b] = [x, c, 0];
+  else if (seg === 2) [r, g, b] = [0, c, x];
+  else if (seg === 3) [r, g, b] = [0, x, c];
+  else if (seg === 4) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [Math.round((r + m) * 100), Math.round((g + m) * 100), Math.round((b + m) * 100)];
 }
 
 // Streams `mb` megabytes of colorful text through the terminal and reports the

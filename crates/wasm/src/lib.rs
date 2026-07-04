@@ -118,6 +118,44 @@ impl Terminal {
         self.inner.set_default_colors(fg, bg, cursor);
     }
 
+    // --- Sixel images -------------------------------------------------------
+
+    /// Cell size in device pixels, so Sixel images lay out in whole cells.
+    #[wasm_bindgen(js_name = setCellPixels)]
+    pub fn set_cell_pixels(&mut self, w: usize, h: usize) {
+        self.inner.set_cell_pixels(w, h);
+    }
+
+    /// Counter bumped when the image set changes; re-sync textures on change.
+    #[wasm_bindgen(js_name = imagesVersion)]
+    pub fn images_version(&self) -> u32 {
+        self.inner.images_version()
+    }
+
+    /// Live image ids (oldest first).
+    #[wasm_bindgen(js_name = imageIds)]
+    pub fn image_ids(&self) -> Vec<u32> {
+        self.inner.image_ids()
+    }
+
+    /// RGBA bytes of image `id` (`width*height*4`), empty if gone.
+    #[wasm_bindgen(js_name = imageRgba)]
+    pub fn image_rgba(&self, id: u32) -> Vec<u8> {
+        self.inner.image_rgba(id)
+    }
+
+    /// `[width, height]` in pixels of image `id`.
+    #[wasm_bindgen(js_name = imageSize)]
+    pub fn image_size(&self, id: u32) -> Vec<u32> {
+        self.inner.image_size(id)
+    }
+
+    /// Per-frame placements: flat `[id, viewportRow, col, widthPx, heightPx] …`.
+    #[wasm_bindgen(js_name = imagePlacements)]
+    pub fn image_placements(&self) -> Vec<i32> {
+        self.inner.image_placements()
+    }
+
     // --- scrollback viewport ------------------------------------------------
 
     #[wasm_bindgen(js_name = scrollLines)]

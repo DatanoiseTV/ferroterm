@@ -28,6 +28,17 @@ All notable changes to this project are documented here. The format is based on
   version counter; the JS component re-themes and repaints when it changes.
   New APIs: `Terminal::palette_version` / `palette_export` / `set_default_colors`
   and their wasm bindings.
+- **Sixel graphics.** DCS Sixel images are now decoded (RGB and HLS color
+  definitions, run-length, raster attributes) and rendered instead of being
+  consumed and dropped. The parser captures DCS payloads and dispatches them
+  (`Perform::dcs_dispatch`); the core anchors each image in absolute
+  line-serial space so it scrolls with its text and lives in scrollback, and
+  advances the cursor below the image. The JS component composites images on a
+  renderer-agnostic overlay canvas, so both the Canvas2D and WebGL renderers
+  show them. New APIs: `set_cell_pixels`, `images_version`, `image_ids`,
+  `image_rgba`, `image_size`, `image_placements` (+ wasm bindings). A `sixel`
+  demo command was added to the browser example. iTerm2/Kitty image protocols
+  remain unrendered.
 
 ## [0.2.0] - 2026-07-04
 

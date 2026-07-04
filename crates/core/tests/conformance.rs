@@ -535,3 +535,55 @@ fn ris_restores_palette() {
     assert_eq!(ex[1], 0); // bg override cleared
     assert_eq!(ex[3 + 1], 0); // index 1 cleared
 }
+
+// --- Sixel images -------------------------------------------------------
+
+#[test]
+fn sixel_dcs_places_an_image() {
+    let mut t = term();
+    t.set_cell_pixels(8, 16);
+    let v0 = t.images_version();
+    // 4px-wide, 6px-tall red block via a Sixel DCS.
+    t.feed(b"\x1bPq#1;2;100;0;0#1!4~\x1b\\");
+    assert!(t.images_version() > v0);
+    let ids = t.image_ids();
+    assert_eq!(ids.len(), 1);
+    let size = t.image_size(ids[0]);
+    assert_eq!(size, vec![4, 6]);
+    let rgba = t.image_rgba(ids[0]);
+    assert_eq!(rgba.len(), 4 * 6 * 4);
+    assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
+    // Placement: image at viewport row 0, col 0, 4x6 px.
+    let pl = t.image_placements();
+    assert_eq!(&pl[0..5], &[ids[0] as i32, 0, 0, 4, 6]);
+}
+
+#[test]
+fn sixel_advances_cursor_below_image() {
+    let mut t = term();
+    t.set_cell_pixels(8, 16); // 6px tall -> 1 cell row
+    t.feed(b"X"); // cursor at (1,0)
+    t.feed(b"\x1bPq#1;2;100;0;0#1!4~\x1b\\");
+    // Cursor moved to start of the next line.
+    assert_eq!(t.cursor(), (0, 1));
+}
+
+#[test]
+fn sixel_image_scrolls_and_clears() {
+    let mut t = term(); // 5 rows
+    t.set_cell_pixels(8, 16);
+    t.feed(b"\x1bPq#1;2;100;0;0#1!4~\x1b\\"); // image at serial 0
+    // Scroll the screen a few lines; the image's viewport row must decrease.
+    for _ in 0..3 {
+        t.feed(b"\r\n");
+    }
+    let pl = t.image_placements();
+    assert!(!pl.is_empty());
+    assert!(pl[1] < 0 || pl[1] < 3); // row moved up as content scrolled
+    // Full clear (ED 2) drops on-screen images.
+    t.feed(b"\x1b[2J");
+    // Image at serial 0 is above the screen now (scrolled), so it survives ED2;
+    // RIS drops everything.
+    t.feed(b"\x1bc");
+    assert!(t.image_ids().is_empty());
+}

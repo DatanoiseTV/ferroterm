@@ -143,6 +143,7 @@ export class Ferroterm {
     this._maybeBell();
     this._maybeTitle();
     this._maybePalette();
+    this._syncImages();
     if (this.attached) this._scheduleRender();
   }
 
@@ -197,6 +198,7 @@ export class Ferroterm {
     this.term.resize(cols, rows);
     this.model.resize(cols, rows);
     if (this.renderer) this.renderer.resize(this.model, this.metrics);
+    this._sizeOverlay();
     this._forceNext = true;
     if (this.attached) this._scheduleRender();
     for (const cb of this._resizeCbs) cb(cols, rows);
@@ -224,6 +226,9 @@ export class Ferroterm {
       });
       this._resizeObserver.observe(container);
     }
+    // Re-sync any images decoded before this view attached.
+    this._imagesVersion = -1;
+    this._syncImages();
     this._forceNext = true;
     this._scheduleRender();
     if (document.hasFocus && document.hasFocus()) this.focus();
@@ -239,6 +244,10 @@ export class Ferroterm {
     this.renderer = null;
     if (this._menu) this._menu.remove();
     if (this._input) this._input.remove();
+    if (this._imgOverlay) this._imgOverlay.remove();
+    this._imgOverlay = null;
+    this._imgCtx = null;
+    this._imgCache = null;
     this._input = null;
     this.container = null;
     this._renderScheduled = false;
@@ -369,7 +378,11 @@ export class Ferroterm {
     const descent = m.actualBoundingBoxDescent || fontSize * 0.25;
     const cellH = Math.max(1, Math.ceil(fontSize * lineHeight));
     const baseline = Math.round(ascent + (cellH - (ascent + descent)) / 2);
-    this.metrics = { cellW, cellH, baseline, fontFamily, fontSize, dpr: window.devicePixelRatio || 1 };
+    const dpr = window.devicePixelRatio || 1;
+    this.metrics = { cellW, cellH, baseline, fontFamily, fontSize, dpr };
+    // Tell the core the cell size in device pixels so Sixel images lay out and
+    // advance the cursor in whole cells.
+    if (this.term) this.term.setCellPixels(Math.round(cellW * dpr), Math.round(cellH * dpr));
   }
 
   _buildDom() {
@@ -390,6 +403,78 @@ export class Ferroterm {
     });
     c.appendChild(ta);
     this._input = ta;
+
+    // Image overlay: a canvas stacked above the text renderer (positioned, so it
+    // sits over the static-flow renderer canvas) on which decoded Sixel images
+    // are composited. Renderer-agnostic, so it works for Canvas2D and WebGL.
+    const iov = document.createElement('canvas');
+    iov.className = 'ft-images';
+    Object.assign(iov.style, {
+      position: 'absolute', left: '0', top: '0', pointerEvents: 'none', zIndex: '3',
+    });
+    c.appendChild(iov);
+    this._imgOverlay = iov;
+    this._imgCtx = iov.getContext('2d');
+    this._imgCache = new Map(); // id -> { canvas, w, h }
+    this._imagesVersion = -1;
+  }
+
+  /** Match the overlay canvas geometry to the text renderer. */
+  _sizeOverlay() {
+    if (!this._imgOverlay) return;
+    const { cellW, cellH, dpr } = this.metrics;
+    const cols = this.model.cols;
+    const rows = this.model.rows;
+    this._imgOverlay.width = Math.round(cols * cellW * dpr);
+    this._imgOverlay.height = Math.round(rows * cellH * dpr);
+    this._imgOverlay.style.width = `${cols * cellW}px`;
+    this._imgOverlay.style.height = `${rows * cellH}px`;
+  }
+
+  /** Reconcile the image texture cache with the core's current image set. */
+  _syncImages() {
+    if (!this.term) return;
+    const v = this.term.imagesVersion();
+    if (v === this._imagesVersion) return;
+    this._imagesVersion = v;
+    if (!this._imgCache) return;
+    const ids = this.term.imageIds();
+    const live = new Set(ids);
+    for (const id of [...this._imgCache.keys()]) {
+      if (!live.has(id)) this._imgCache.delete(id);
+    }
+    for (const id of ids) {
+      if (this._imgCache.has(id)) continue;
+      const [w, h] = this.term.imageSize(id);
+      if (!w || !h) continue;
+      const rgba = this.term.imageRgba(id);
+      if (rgba.length < w * h * 4) continue;
+      const cv = document.createElement('canvas');
+      cv.width = w;
+      cv.height = h;
+      cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
+      this._imgCache.set(id, { canvas: cv, w, h });
+    }
+  }
+
+  /** Draw all live images at their current (scroll-aware) placements. */
+  _drawImages() {
+    const ctx = this._imgCtx;
+    if (!ctx) return;
+    ctx.clearRect(0, 0, this._imgOverlay.width, this._imgOverlay.height);
+    if (!this._imgCache || this._imgCache.size === 0) return;
+    const { cellW, cellH, dpr } = this.metrics;
+    const pl = this.term.imagePlacements(); // [id, row, col, w, h] * n
+    for (let i = 0; i + 4 < pl.length; i += 5) {
+      const id = pl[i], row = pl[i + 1], col = pl[i + 2], w = pl[i + 3], h = pl[i + 4];
+      const tex = this._imgCache.get(id);
+      if (!tex) continue;
+      const x = Math.round(col * cellW * dpr);
+      const y = Math.round(row * cellH * dpr);
+      // Cull images fully outside the viewport.
+      if (y + h <= 0 || y >= this._imgOverlay.height) continue;
+      ctx.drawImage(tex.canvas, x, y, w, h);
+    }
   }
 
   _makeRenderer(kind) {
@@ -407,6 +492,7 @@ export class Ferroterm {
     this.renderer.element.style.left = '0';
     this.renderer.element.style.top = '0';
     this.renderer.element.style.zIndex = '0';
+    this._sizeOverlay();
   }
 
   _scheduleRender() {
@@ -432,6 +518,8 @@ export class Ferroterm {
       focused: this._focused,
     };
     this.renderer.render(this.model, dirtyRows, full, cursor, this._selection, this._hoverLink);
+    if (full) this._sizeOverlay();
+    this._drawImages();
   }
 
   // --- host output --------------------------------------------------------

@@ -24,6 +24,7 @@ mod keys;
 mod palette;
 mod parser;
 mod reflow;
+mod sixel;
 mod terminal;
 mod width;
 

@@ -120,6 +120,11 @@ pub trait Perform {
     /// A completed OSC (`ESC ] ... BEL` / `... ST`). `params` is the payload
     /// split on `;`.
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool);
+    /// A completed DCS (`ESC P ... ST`). `data` is the raw payload after `ESC P`
+    /// (the leading params/intermediates + final byte + string). The default
+    /// ignores it. Used for Sixel (`... q ...`). `truncated` is set if the
+    /// payload hit the parser's size cap.
+    fn dcs_dispatch(&mut self, _data: &[u8], _truncated: bool) {}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -144,11 +149,18 @@ pub struct Parser {
     intermediates: Vec<u8>,
     ignoring: bool,
     osc_raw: Vec<u8>,
+    /// Raw DCS payload (everything after `ESC P`, up to ST). Capped to bound
+    /// memory against a hostile un-terminated sequence.
+    dcs_raw: Vec<u8>,
+    dcs_overflow: bool,
     // UTF-8 decode state (only used in Ground).
     utf8_remaining: u8,
     utf8_cp: u32,
     utf8_min: u32,
 }
+
+/// Cap on captured DCS payload (Sixel images can be large, but bound it).
+const MAX_DCS: usize = 8 * 1024 * 1024;
 
 impl Default for Parser {
     fn default() -> Self {
@@ -164,6 +176,8 @@ impl Parser {
             intermediates: Vec::with_capacity(MAX_INTERMEDIATES),
             ignoring: false,
             osc_raw: Vec::new(),
+            dcs_raw: Vec::new(),
+            dcs_overflow: false,
             utf8_remaining: 0,
             utf8_cp: 0,
             utf8_min: 0,
@@ -182,8 +196,7 @@ impl Parser {
             if self.state == State::Ground && self.utf8_remaining == 0 {
                 let start = i;
                 while i < len {
-                    let b = bytes[i];
-                    if b < 0x20 || b >= 0x7f {
+                    if !(0x20..0x7f).contains(&bytes[i]) {
                         break;
                     }
                     i += 1;
@@ -218,6 +231,8 @@ impl Parser {
                 // terminator — flush the OSC before restarting.
                 if self.state == State::OscString {
                     self.osc_end(perform, false);
+                } else if self.state == State::DcsPassthrough {
+                    self.dcs_end(perform);
                 }
                 self.enter_escape();
                 return;
@@ -336,6 +351,8 @@ impl Parser {
                 // 'P' DCS
                 self.params.clear();
                 self.intermediates.clear();
+                self.dcs_raw.clear();
+                self.dcs_overflow = false;
                 self.state = State::DcsPassthrough;
             }
             0x58 | 0x5e | 0x5f => {
@@ -482,12 +499,24 @@ impl Parser {
         self.state = State::Ground;
     }
 
-    // --- DCS / SOS-PM-APC (consumed, not interpreted) -----------------------
+    // --- DCS (captured; Sixel decoded by the Perform impl) ------------------
 
     fn dcs(&mut self, b: u8) {
-        // Terminated by ST (ESC \) — ESC is caught in `step`, ending the state.
-        let _ = b;
+        // Capture the payload; ST (ESC \) is caught in `step`, ending the state.
+        if self.dcs_raw.len() < MAX_DCS {
+            self.dcs_raw.push(b);
+        } else {
+            self.dcs_overflow = true;
+        }
     }
+
+    fn dcs_end<P: Perform>(&mut self, perform: &mut P) {
+        perform.dcs_dispatch(&self.dcs_raw, self.dcs_overflow);
+        self.dcs_raw.clear();
+        self.dcs_overflow = false;
+    }
+
+    // --- SOS / PM / APC (consumed, not interpreted) -------------------------
 
     fn sos_pm_apc(&mut self, b: u8) {
         let _ = b;

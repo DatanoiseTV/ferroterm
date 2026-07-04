@@ -35,6 +35,9 @@ and captures input.
 - **Dynamic palette**: OSC 4 (palette entries), OSC 10/11/12 (default fg / bg /
   cursor) and OSC 104/110/111/112 (resets) are applied live, including `?`
   color-query replies.
+- **Sixel graphics**: DCS Sixel images (RGB + HLS colors, RLE) are decoded and
+  composited over the grid in a renderer-agnostic overlay; images scroll with
+  their text and are anchored in scrollback. Works with both renderers.
 - **Two renderers, swappable at runtime**: a Canvas2D renderer that redraws only
   dirty rows, and a WebGL renderer with a dynamic glyph atlas and batched quads.
   WebGL falls back to Canvas2D when unavailable.
@@ -201,7 +204,9 @@ panic/hang" case.
 
 ## Known limitations (honestly)
 
-- **DCS / Sixel / iTerm images** are recognized and consumed but not rendered.
+- **Images: Sixel only.** Sixel graphics are decoded and rendered (see below);
+  the iTerm2 inline-image (OSC 1337) and Kitty graphics protocols are recognized
+  and consumed but not rendered.
 - **Reflow** rewraps the primary screen + scrollback on resize, keeping the
   cursor on its character. The alternate screen is intentionally *not* reflowed
   (full-screen apps repaint on `SIGWINCH`), and a cursor parked mid-screen on the
