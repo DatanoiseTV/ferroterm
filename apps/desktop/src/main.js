@@ -539,6 +539,23 @@ document.getElementById('new-tab').addEventListener('contextmenu', (e) => {
   tabBarMenu(e.clientX, e.clientY, null);
 });
 
+// --- window dragging -------------------------------------------------------
+
+// Tauri honors the `data-tauri-drag-region` attribute (not Electron's
+// `-webkit-app-region` CSS). Mark the title bar's non-interactive areas as drag
+// handles so the window can be moved by the bar background, gaps, and the HUD —
+// while tabs, buttons and selects stay clickable.
+function markDragRegions() {
+  for (const el of document.querySelectorAll('#titlebar, #titlebar *')) {
+    const interactive =
+      el.closest('.tab') ||
+      ['BUTTON', 'SELECT', 'INPUT', 'A'].includes(el.tagName);
+    if (interactive) el.removeAttribute('data-tauri-drag-region');
+    else el.setAttribute('data-tauri-drag-region', '');
+  }
+}
+markDragRegions();
+
 // --- boot ------------------------------------------------------------------
 
 // WASM must be initialized before any `new Ferroterm(...)`.
