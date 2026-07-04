@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Grapheme-cluster merging.** Combining marks (accents, diacritics), ZWJ
+  emoji sequences (family / profession), variation selectors, and
+  regional-indicator flags now collapse into a single cell instead of dropping
+  zero-width scalars. The core interns cluster strings and exposes them via
+  `Terminal::grapheme(id)`; snapshots carry a per-cell grapheme id (cell is now
+  6 words), and both renderers draw the full cluster (WebGL keys its atlas by
+  the cluster string). Removes the first item from the "known limitations" list.
+
 ## [0.2.0] - 2026-07-04
 
 ### Added

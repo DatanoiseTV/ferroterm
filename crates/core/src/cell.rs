@@ -84,13 +84,19 @@ impl Pen {
 /// One character cell in the grid.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
-    /// The displayed character. `' '` for a blank cell. Full Unicode scalar
-    /// value, so astral-plane code points (emoji, CJK ext) are one cell.
+    /// The primary displayed character. `' '` for a blank cell. Full Unicode
+    /// scalar value, so astral-plane code points (emoji, CJK ext) are one cell.
+    /// For a multi-scalar grapheme cluster (base + combining marks, a ZWJ emoji
+    /// sequence, a flag), this is the first scalar and [`grapheme`] holds the
+    /// full cluster.
     pub ch: char,
     pub pen: Pen,
     /// OSC 8 hyperlink id (0 = none). Resolves to a URI in the terminal's link
     /// registry.
     pub link: u32,
+    /// Grapheme-cluster id (0 = the cell is just `ch`). Non-zero ids resolve to
+    /// the full cluster string in the terminal's grapheme table.
+    pub grapheme: u32,
 }
 
 impl Default for Cell {
@@ -99,6 +105,7 @@ impl Default for Cell {
             ch: ' ',
             pen: Pen::default(),
             link: 0,
+            grapheme: 0,
         }
     }
 }
@@ -116,6 +123,7 @@ impl Cell {
                 flags: pen.flags & attr::INVERSE, // preserve inverse-fill semantics
             },
             link: 0,
+            grapheme: 0,
         }
     }
 

@@ -265,3 +265,85 @@ fn malicious_long_params_do_not_panic() {
     t.feed(b"ok");
     assert_eq!(t.cell_char(0, 0), 'o');
 }
+
+// --- grapheme clusters --------------------------------------------------
+
+#[test]
+fn combining_accent_merges_into_base_cell() {
+    // "e" + U+0301 COMBINING ACUTE ACCENT -> one cell "é", cursor advances 1.
+    let mut t = term();
+    t.feed("e\u{0301}".as_bytes());
+    assert_eq!(t.cell_cluster(0, 0), "e\u{0301}");
+    assert_eq!(t.cursor(), (1, 0));
+    // The second column is untouched (still blank).
+    assert_eq!(t.cell_char(1, 0), ' ');
+}
+
+#[test]
+fn multiple_combining_marks_stack() {
+    let mut t = term();
+    t.feed("a\u{0300}\u{0323}".as_bytes()); // a + grave + dot-below
+    assert_eq!(t.cell_cluster(0, 0), "a\u{0300}\u{0323}");
+    assert_eq!(t.cursor(), (1, 0));
+}
+
+#[test]
+fn zwj_emoji_sequence_is_one_cluster() {
+    // Family: man + ZWJ + woman + ZWJ + girl (each with VS16 omitted here).
+    let mut t = term();
+    let seq = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    t.feed(seq.as_bytes());
+    assert_eq!(t.cell_cluster(0, 0), seq);
+}
+
+#[test]
+fn variation_selector_attaches() {
+    // Heart + VS16 (emoji presentation) is one cluster.
+    let mut t = term();
+    t.feed("\u{2764}\u{FE0F}".as_bytes());
+    assert_eq!(t.cell_cluster(0, 0), "\u{2764}\u{FE0F}");
+}
+
+#[test]
+fn regional_indicators_form_one_flag() {
+    // U+1F1E9 U+1F1EA = flag of Germany, occupies two columns as one cluster.
+    let mut t = term();
+    t.feed("\u{1F1E9}\u{1F1EA}".as_bytes());
+    assert_eq!(t.cell_cluster(0, 0), "\u{1F1E9}\u{1F1EA}");
+    assert!(t.active_line(0)[0].pen.has(attr::WIDE));
+    assert!(t.active_line(0)[1].pen.has(attr::WIDE_SPACER));
+    assert_eq!(t.cursor(), (2, 0));
+}
+
+#[test]
+fn control_char_breaks_cluster_continuation() {
+    // A combining mark after a CR must NOT attach to the pre-CR cell.
+    let mut t = term();
+    t.feed(b"a\r");
+    t.feed("\u{0301}".as_bytes()); // dropped: no base at cursor start
+    assert_eq!(t.cell_cluster(0, 0), "a");
+}
+
+#[test]
+fn combining_mark_after_ascii_fastpath() {
+    // The ASCII bulk fast-path must leave last_grapheme pointing at the final
+    // cell so a trailing combining mark still merges.
+    let mut t = term();
+    t.feed(b"hello");
+    t.feed("\u{0301}".as_bytes());
+    assert_eq!(t.cell_cluster(4, 0), "o\u{0301}");
+}
+
+#[test]
+fn snapshot_carries_grapheme_id() {
+    use ferroterm_core::{SNAPSHOT_CELL_WORDS, SNAPSHOT_MAGIC};
+    let mut t = term();
+    t.feed("e\u{0301}".as_bytes());
+    let snap = t.snapshot(true);
+    assert_eq!(snap[0], SNAPSHOT_MAGIC);
+    // header is 7 words; first row: [row_index, cells...]; cell 0 words start at 8
+    let base = 7 + 1;
+    let grapheme_id = snap[base + SNAPSHOT_CELL_WORDS - 1];
+    assert_ne!(grapheme_id, 0);
+    assert_eq!(t.grapheme(grapheme_id), Some("e\u{0301}"));
+}

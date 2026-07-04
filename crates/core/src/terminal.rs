@@ -12,7 +12,7 @@ use crate::width::char_width;
 /// The render-snapshot magic word (little-endian `F3E7` + version).
 pub const SNAPSHOT_MAGIC: u32 = 0xF3E7_0001;
 /// Words per cell in a snapshot: `[codepoint, fg, bg, flags, link]`.
-pub const SNAPSHOT_CELL_WORDS: usize = 5;
+pub const SNAPSHOT_CELL_WORDS: usize = 6;
 
 /// DEC private + ANSI modes we track. Exposed to the host so it can encode
 /// keyboard and mouse input the way the running program expects.
@@ -79,6 +79,16 @@ pub struct Terminal {
     /// OSC 8 hyperlink URIs; `link` id `n` -> `links[n - 1]`.
     links: Vec<String>,
 
+    /// Grapheme-cluster strings; cell `grapheme` id `n` -> `graphemes[n - 1]`.
+    graphemes: Vec<String>,
+    grapheme_ids: std::collections::HashMap<String, u32>,
+    /// Position of the last printed base cell, for attaching combining marks.
+    last_grapheme: Option<(usize, usize)>,
+    /// A ZWJ (U+200D) was just seen; the next scalar joins the current cluster.
+    pending_zwj: bool,
+    /// The last printed base was a lone regional indicator (for flag pairing).
+    last_ri: bool,
+
     title: String,
     title_dirty: bool,
 
@@ -103,6 +113,11 @@ impl Terminal {
             cur_link: 0,
             modes: Modes::default(),
             links: Vec::new(),
+            graphemes: Vec::new(),
+            grapheme_ids: std::collections::HashMap::new(),
+            last_grapheme: None,
+            pending_zwj: false,
+            last_ri: false,
             title: String::new(),
             title_dirty: false,
             output: Vec::new(),
@@ -271,11 +286,40 @@ impl Terminal {
 
     fn write_char(&mut self, c: char) {
         let w = char_width(c);
+
+        // Zero-width scalars (combining marks, variation selectors, ZWJ) attach
+        // to the previous cell's grapheme cluster instead of taking a cell.
         if w == 0 {
-            // Zero-width (combining marks / joiners): dropped in this core.
-            // Documented limitation — single-scalar cells can't hold clusters.
+            if c == '\u{200D}' {
+                // ZWJ: the next scalar joins this cluster.
+                self.attach_combining(c);
+                self.pending_zwj = true;
+            } else {
+                self.attach_combining(c);
+            }
             return;
         }
+
+        // After a ZWJ, this scalar joins the previous cluster (emoji sequences
+        // like family / profession emoji) rather than starting a new cell.
+        if self.pending_zwj {
+            self.pending_zwj = false;
+            self.attach_combining(c);
+            return;
+        }
+
+        // Regional-indicator pairing: two consecutive RIs form one flag.
+        if is_regional_indicator(c) {
+            if self.last_ri {
+                self.last_ri = false;
+                self.pair_regional_indicator(c);
+                return;
+            }
+            self.last_ri = true;
+        } else {
+            self.last_ri = false;
+        }
+
         let cols = self.cols();
         let autowrap = self.modes.autowrap;
 
@@ -291,7 +335,6 @@ impl Terminal {
                 self.carriage_return();
                 self.linefeed();
             } else {
-                // Nowrap: back up so the wide glyph has room.
                 self.buf_mut().cursor.x = cols - 2;
             }
         }
@@ -318,6 +361,7 @@ impl Terminal {
                 ch: c,
                 pen: lead,
                 link,
+                grapheme: 0,
             };
             if w == 2 && x + 1 < cols {
                 let mut spacer = pen;
@@ -326,9 +370,11 @@ impl Terminal {
                     ch: ' ',
                     pen: spacer,
                     link,
+                    grapheme: 0,
                 };
             }
         }
+        self.last_grapheme = Some((x, y));
 
         let new_x = x + w as usize;
         let buf = self.buf_mut();
@@ -338,6 +384,105 @@ impl Terminal {
         } else {
             buf.cursor.x = new_x;
         }
+    }
+
+    // --- grapheme clustering ------------------------------------------------
+
+    /// Intern a cluster string, returning its id (deduplicated).
+    fn intern_grapheme(&mut self, s: String) -> u32 {
+        if let Some(&id) = self.grapheme_ids.get(&s) {
+            return id;
+        }
+        self.graphemes.push(s.clone());
+        let id = self.graphemes.len() as u32;
+        self.grapheme_ids.insert(s, id);
+        id
+    }
+
+    fn cluster_of(&self, cell: &Cell) -> String {
+        if cell.grapheme == 0 {
+            cell.ch.to_string()
+        } else {
+            self.graphemes
+                .get((cell.grapheme - 1) as usize)
+                .cloned()
+                .unwrap_or_else(|| cell.ch.to_string())
+        }
+    }
+
+    /// Append a scalar to the last printed cell's cluster.
+    fn attach_combining(&mut self, c: char) {
+        let Some((x, y)) = self.last_grapheme else {
+            return;
+        };
+        let cell = *self.buf().cell(x, y);
+        let mut s = self.cluster_of(&cell);
+        // Bound cluster length so hostile input can't grow one cell unboundedly.
+        if s.chars().count() >= 16 {
+            return;
+        }
+        s.push(c);
+        let id = self.intern_grapheme(s);
+        let new = Cell { grapheme: id, ..cell };
+        self.buf_mut().line_mut(y)[x] = new;
+    }
+
+    /// The second regional indicator of a flag: merge into the previous cell and
+    /// widen it to two columns.
+    fn pair_regional_indicator(&mut self, c: char) {
+        let Some((x, y)) = self.last_grapheme else {
+            self.write_char_forced(c);
+            return;
+        };
+        let cols = self.cols();
+        let cell = *self.buf().cell(x, y);
+        let mut s = self.cluster_of(&cell);
+        s.push(c);
+        let id = self.intern_grapheme(s);
+        let mut pen = cell.pen;
+        pen.set(attr::WIDE);
+        let base = Cell {
+            grapheme: id,
+            pen,
+            ..cell
+        };
+        {
+            let buf = self.buf_mut();
+            buf.line_mut(y)[x] = base;
+            if x + 1 < cols {
+                let mut spacer = base.pen;
+                spacer.clear(attr::WIDE);
+                spacer.set(attr::WIDE_SPACER);
+                buf.line_mut(y)[x + 1] = Cell {
+                    ch: ' ',
+                    pen: spacer,
+                    link: base.link,
+                    grapheme: 0,
+                };
+            }
+        }
+        // The first RI occupied one column; consume the second column too.
+        let nx = (x + 2).min(cols - 1);
+        self.buf_mut().cursor.x = nx;
+        if x + 2 >= cols {
+            self.buf_mut().cursor.pending_wrap = self.modes.autowrap;
+        }
+    }
+
+    /// Print `c` as a fresh cell, bypassing cluster/RI state (used as a
+    /// fallback). Clears grapheme state first.
+    fn write_char_forced(&mut self, c: char) {
+        self.last_grapheme = None;
+        self.pending_zwj = false;
+        self.write_char(c);
+    }
+
+    /// Reset grapheme-continuation state; called on any cursor discontinuity so
+    /// a later combining mark can't attach across it.
+    fn break_grapheme(&mut self) {
+        self.last_grapheme = None;
+        self.pending_zwj = false;
+        self.last_ri = false;
     }
 
     // --- cursor motion & scrolling -----------------------------------------
@@ -618,6 +763,21 @@ impl Terminal {
         self.cur_link = 0;
         self.modes = Modes::default();
         self.links.clear();
+        // NOTE: the grapheme intern table is deliberately NOT cleared here.
+        // Snapshot cell `grapheme` ids must stay stable for the terminal's whole
+        // lifetime so the JS-side id->cluster cache never goes stale across a
+        // RIS. The table is deduplicated and each cluster is length-bounded, so
+        // it can't grow unboundedly in practice.
+        self.break_grapheme();
+    }
+
+    /// Resolve a grapheme-cluster id (as emitted in the snapshot) to its full
+    /// cluster string. Returns `None` for id 0 or an out-of-range id.
+    pub fn grapheme(&self, id: u32) -> Option<&str> {
+        if id == 0 {
+            return None;
+        }
+        self.graphemes.get((id - 1) as usize).map(|s| s.as_str())
     }
 
     // --- snapshot -----------------------------------------------------------
@@ -628,7 +788,9 @@ impl Terminal {
     /// Layout (all `u32`):
     /// `[MAGIC, cols, rows, cur_x, cur_y, cur_flags, n_rows]`
     /// then per row: `[row_index, cell*cols]` where each cell is
-    /// `[codepoint, fg, bg, flags, link]`.
+    /// `[codepoint, fg, bg, flags, link, grapheme]`. `grapheme` is 0 when the
+    /// cell is a single scalar (`codepoint`); non-zero ids resolve to the full
+    /// cluster string via [`Terminal::grapheme`].
     pub fn snapshot(&mut self, force: bool) -> Vec<u32> {
         let force = force || self.viewport_full;
         let cols = self.cols();
@@ -711,6 +873,7 @@ fn push_line(out: &mut Vec<u32>, line: &Line, cols: usize) {
         out.push(cell.pen.bg.pack());
         out.push(cell.pen.flags as u32);
         out.push(cell.link);
+        out.push(cell.grapheme);
     }
 }
 
@@ -764,6 +927,10 @@ fn parse_ext_color(params: &Params, i: usize) -> Option<(Color, usize)> {
     }
 }
 
+fn is_regional_indicator(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
 impl Perform for Terminal {
     fn print(&mut self, c: char) {
         self.write_char(c);
@@ -772,6 +939,10 @@ impl Perform for Terminal {
     /// Fast path for runs of printable ASCII (all width-1). Fills whole spans of
     /// a line in a tight loop instead of dispatching per character.
     fn print_ascii(&mut self, mut bytes: &[u8]) {
+        // ASCII is never combining/ZWJ/RI, but a following combining mark should
+        // attach to the last ASCII cell, so keep last_grapheme current.
+        self.pending_zwj = false;
+        self.last_ri = false;
         if self.modes.insert {
             for &b in bytes {
                 self.write_char(b as char);
@@ -801,9 +972,11 @@ impl Perform for Terminal {
                         ch: b as char,
                         pen,
                         link,
+                        grapheme: 0,
                     };
                 }
             }
+            self.last_grapheme = Some((x + n - 1, y));
             bytes = &bytes[n..];
             let buf = self.buf_mut();
             let nx = x + n;
@@ -823,6 +996,10 @@ impl Perform for Terminal {
     }
 
     fn execute(&mut self, byte: u8) {
+        // Any C0 control breaks grapheme continuation: a combining mark after
+        // CR/LF/BS/HT must not attach across the cursor discontinuity. (BEL is
+        // harmless to break on too.)
+        self.break_grapheme();
         match byte {
             0x07 => self.bell_count += 1,       // BEL
             0x08 => {
@@ -856,6 +1033,8 @@ impl Perform for Terminal {
         if ignore {
             return;
         }
+        // A CSI (cursor move, erase, SGR, …) ends any in-progress cluster.
+        self.break_grapheme();
         let private = intermediates.first() == Some(&b'?');
         let rows = self.rows();
         let cols = self.cols();
@@ -981,6 +1160,7 @@ impl Perform for Terminal {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], byte: u8) {
+        self.break_grapheme();
         if intermediates.is_empty() {
             match byte {
                 b'D' => self.linefeed(),          // IND

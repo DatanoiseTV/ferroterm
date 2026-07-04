@@ -87,6 +87,9 @@ export class Ferroterm {
     this.palette = new Palette(this.opts.theme);
     this.term = new WasmTerminal(this.opts.cols, this.opts.rows, this.opts.scrollback);
     this.model = new GridModel(this.opts.cols, this.opts.rows);
+    // Let the model resolve grapheme-cluster ids (base + combining marks, ZWJ
+    // emoji, flags) to their full strings for rendering, selection and copy.
+    this.model.graphemeResolver = (id) => this.term.grapheme(id);
 
     this._dataCbs = [];
     this._titleCbs = [];

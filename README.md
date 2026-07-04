@@ -26,7 +26,10 @@ and captures input.
   insert / delete, scroll regions, alternate screen, DECSET/DECRST modes, and
   host replies (DSR, Device Attributes).
 - **Unicode**: UTF-8 decoding with astral-plane support (emoji, CJK extensions),
-  wide-character (double-width) cells, and a compact East-Asian-width table.
+  wide-character (double-width) cells, a compact East-Asian-width table, and
+  **grapheme-cluster merging** — combining accents, ZWJ emoji sequences (family,
+  profession), variation selectors, and regional-indicator flags collapse into a
+  single cell.
 - **Links**: OSC 8 hyperlinks *and* automatic URL detection, with hover-underline
   and click-to-open.
 - **Two renderers, swappable at runtime**: a Canvas2D renderer that redraws only
@@ -158,8 +161,8 @@ ballpark.
 **Head-to-head vs. xterm.js** (same browser, identical payloads — see
 [COMPARISON.md](COMPARISON.md) for methodology): ferroterm parses **1.4×–4.4×
 faster** and ships in **41 KB gzip** (both renderers) vs xterm.js's 68–95 KB.
-xterm.js remains more mature (grapheme clusters, addon ecosystem); the doc is
-honest about the trade-offs.
+xterm.js remains more mature (larger addon ecosystem, years of production
+hardening); the doc is honest about the trade-offs.
 
 The browser `loadtest` command measures end-to-end (parse + render) MB/s and
 prints it the way the xterm.js demo does.
@@ -167,21 +170,23 @@ prints it the way the xterm.js demo does.
 ## Testing
 
 ```bash
-cargo test -p ferroterm-core          # 20+ behavioral conformance tests
+cargo test -p ferroterm-core          # 30+ behavioral conformance tests
 ```
 
 The tests assert against the *visible grid state* (what a renderer would draw),
 which is the strongest check for an emulator: printing/wrapping, cursor motion,
 erase/scroll regions, SGR (incl. true color), alt-screen isolation, wide chars,
-astral emoji, OSC titles, OSC 8 links, DSR/DA replies, and a fuzz-style
-"malicious input must not panic/hang" case.
+astral emoji, grapheme clusters (combining marks, ZWJ sequences, flags), OSC
+titles, OSC 8 links, DSR/DA replies, and a fuzz-style "malicious input must not
+panic/hang" case.
 
 ## Design notes
 
 - **One snapshot per frame.** Crossing the WASM boundary per cell is slow, so the
   core serializes changed rows into a single `Uint32Array`
   (`[magic, cols, rows, curX, curY, curFlags, nRows, {rowIndex, cells…}…]`,
-  5 words per cell) that the JS model decodes once. Only dirty rows are emitted.
+  6 words per cell — `[codepoint, fg, bg, flags, link, grapheme]`) that the JS
+  model decodes once. Only dirty rows are emitted.
 - **Deferred wrap.** Printing into the last column sets a pending-wrap flag rather
   than wrapping immediately, matching real DEC terminals.
 - **Bounded input.** Parameter counts, intermediates and OSC payloads are capped
@@ -189,18 +194,14 @@ astral emoji, OSC titles, OSC 8 links, DSR/DA replies, and a fuzz-style
 - **Safety at the boundary.** All untrusted bytes are parsed in memory-safe Rust;
   the JS layer never interprets escape sequences itself.
 
-## Known limitations (v0.1, honestly)
+## Known limitations (honestly)
 
-- **Combining marks / grapheme clusters** (ZWJ emoji sequences, flags, base +
-  combining accents) are not merged into a single cell — each cell holds one
-  Unicode scalar, so zero-width combining code points are dropped. Most text and
-  standalone emoji render correctly; complex clusters do not.
 - **No reflow on resize.** Resizing truncates/pads lines rather than rewrapping
   wrapped content. Scrollback is preserved but not rewrapped.
 - **DCS / Sixel / iTerm images** are recognized and consumed but not rendered.
 - **Palette OSC (4/10/11) and some rare modes** are parsed but not applied.
 
-These are deliberate scope choices for a first release, not accidental gaps.
+These are deliberate scope choices, not accidental gaps.
 
 ## License
 

@@ -122,7 +122,7 @@ export class CanvasRenderer {
       ctx.font = font;
       ctx.fillStyle = fg;
       if (flags & ATTR.DIM) ctx.globalAlpha = 0.6;
-      ctx.fillText(String.fromCodePoint(cp), px, py + baseline);
+      ctx.fillText(model.clusterAt(i), px, py + baseline);
       if (flags & ATTR.DIM) ctx.globalAlpha = 1;
     }
 
@@ -185,7 +185,7 @@ export class CanvasRenderer {
       font += `${fontSize}px ${fontFamily}`;
       ctx.font = font;
       ctx.fillStyle = this.palette.cursorAccent;
-      ctx.fillText(String.fromCodePoint(cp), px, py + baseline);
+      ctx.fillText(model.clusterAt(i), px, py + baseline);
     }
   }
 

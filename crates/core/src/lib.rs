@@ -42,4 +42,19 @@ impl Terminal {
             ' '
         }
     }
+
+    /// The full grapheme cluster displayed at `(x, y)`: either the single
+    /// scalar [`cell_char`](Self::cell_char), or the merged cluster string when
+    /// combining marks / a ZWJ sequence / a flag attached to that cell.
+    pub fn cell_cluster(&self, x: usize, y: usize) -> String {
+        if x < self.cols() && y < self.rows() {
+            let cell = self.active_line(y)[x];
+            match self.grapheme(cell.grapheme) {
+                Some(s) => s.to_string(),
+                None => cell.ch.to_string(),
+            }
+        } else {
+            String::new()
+        }
+    }
 }

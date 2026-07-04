@@ -89,6 +89,14 @@ impl Terminal {
         self.inner.link_uri(id).map(|s| s.to_string())
     }
 
+    /// Resolve a grapheme-cluster id (from a cell's `grapheme` field in the
+    /// snapshot) to the full cluster string (base + combining marks, a ZWJ
+    /// emoji sequence, or a regional-indicator flag).
+    #[wasm_bindgen(js_name = grapheme)]
+    pub fn grapheme(&self, id: u32) -> Option<String> {
+        self.inner.grapheme(id).map(|s| s.to_string())
+    }
+
     // --- scrollback viewport ------------------------------------------------
 
     #[wasm_bindgen(js_name = scrollLines)]

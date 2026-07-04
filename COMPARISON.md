@@ -61,7 +61,7 @@ addon.
 | ANSI/VT parser | from scratch (DEC state machine) | mature |
 | 256-color / true color | yes | yes |
 | Wide (CJK) glyphs | yes | yes |
-| Combining marks / ZWJ grapheme clusters | **no** (documented limit) | **yes** |
+| Combining marks / ZWJ grapheme clusters | yes | yes |
 | OSC 8 hyperlinks | yes (built in) | yes |
 | Auto URL link detection | yes (built in) | addon |
 | Search | yes (built in) | addon |
@@ -77,12 +77,10 @@ ferroterm is **faster** (1.4–4.4× parse), **smaller** (41 KB gzip with both
 renderers vs 68–95 KB), and parses untrusted bytes in **memory-safe Rust**. It
 ships Canvas2D and WebGL out of the box.
 
-xterm.js is **more mature and more complete**: it has real grapheme-cluster
-handling (ferroterm drops zero-width combining marks today), a large addon
-ecosystem, and years of production hardening in editors and IDEs. If you need
-correctness on complex Unicode or a proven track record, use xterm.js. If you
-want raw throughput, a small footprint, and a Rust core you can embed anywhere
-WASM runs, use ferroterm.
+xterm.js is **more mature**: a large addon ecosystem and years of production
+hardening in editors and IDEs. If you need a proven track record or a specific
+addon, use xterm.js. If you want raw throughput, a small footprint, and a Rust
+core you can embed anywhere WASM runs, use ferroterm.
 
 Numbers were produced by `bench/compare.html` on 2026-07-04; rerun it on your own
 hardware to get figures for your machine.

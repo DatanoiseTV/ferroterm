@@ -3,7 +3,7 @@
 // WebGL renderers read this model; link hit-testing and selection read it too.
 
 const SNAPSHOT_MAGIC = 0xf3e70001;
-const CELL_WORDS = 5; // [codepoint, fg, bg, flags, link]
+const CELL_WORDS = 6; // [codepoint, fg, bg, flags, link, grapheme]
 
 export class GridModel {
   constructor(cols, rows) {
@@ -13,6 +13,11 @@ export class GridModel {
     this.cursorVisible = true;
     this.cursorBlink = true;
     this.cursorOnScreen = true;
+    // Resolves a non-zero grapheme id to its cluster string (base + combining
+    // marks / ZWJ sequence / flag). Set by the component to `engine.grapheme`.
+    this.graphemeResolver = null;
+    // id -> cluster string cache, so we cross the WASM boundary once per id.
+    this._clusterCache = new Map();
   }
 
   resize(cols, rows) {
@@ -24,6 +29,7 @@ export class GridModel {
     this.bg = new Uint32Array(n);
     this.flags = new Uint16Array(n);
     this.link = new Uint32Array(n);
+    this.grapheme = new Uint32Array(n);
   }
 
   /**
@@ -66,6 +72,7 @@ export class GridModel {
         this.bg[off] = u32[p + 2];
         this.flags[off] = u32[p + 3];
         this.link[off] = u32[p + 4];
+        this.grapheme[off] = u32[p + 5];
         p += CELL_WORDS;
         off++;
       }
@@ -78,15 +85,34 @@ export class GridModel {
     return y * this.cols + x;
   }
 
+  /**
+   * The full text to draw / copy for cell `i`: a single scalar for ordinary
+   * cells, or the merged grapheme cluster (accented base, ZWJ emoji, flag) when
+   * the cell carries a non-zero grapheme id. Cluster strings are cached by id.
+   */
+  clusterAt(i) {
+    const gid = this.grapheme[i];
+    if (gid !== 0 && this.graphemeResolver) {
+      let s = this._clusterCache.get(gid);
+      if (s === undefined) {
+        s = this.graphemeResolver(gid);
+        if (s == null) s = '';
+        this._clusterCache.set(gid, s);
+      }
+      if (s) return s;
+    }
+    const cp = this.cp[i];
+    return cp === 0 ? ' ' : String.fromCodePoint(cp);
+  }
+
   /** Extract the text of row `y` as a string (for selection / link scanning). */
   rowText(y) {
     let s = '';
     const off = y * this.cols;
     for (let x = 0; x < this.cols; x++) {
-      const cp = this.cp[off + x];
       // Skip wide spacers so double-width glyphs aren't doubled.
       if (this.flags[off + x] & (1 << 9)) continue;
-      s += cp === 0 ? ' ' : String.fromCodePoint(cp);
+      s += this.clusterAt(off + x);
     }
     return s;
   }
