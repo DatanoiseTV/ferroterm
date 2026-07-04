@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-07-05
+
+### Performance
+- **Packed-byte instance colors.** The instanced WebGL renderer now packs each
+  cell's foreground and background as RGBA8 read by the shader as normalized
+  `UNSIGNED_BYTE` attributes, instead of eight floats. This removes the six
+  `/255` divides per cell and shrinks the per-cell instance record from 68 to 44
+  bytes. Text repaint is ~10% faster (0.11 -> 0.10 ms for a full 200x50 frame
+  under software GL); background-heavy frames are unchanged. Output is
+  pixel-identical (verified by a 0-difference full-canvas diff against the
+  previous renderer).
+
+### Changed
+- **Rebuilt the `benchmark` demo command.** The renderer-paint measurement
+  previously timed `write()` + `requestAnimationFrame`, so it measured escape-
+  sequence parsing and vsync delivery, not paint — capped at ~60 fps regardless
+  of renderer speed. It now parses the frame once and times `render()` in a
+  tight best-of-N loop, reporting true compute time (e.g. WebGL ~0.1 ms /
+  ~9000 fps for a full-screen redraw). A new per-frame pipeline table breaks a
+  frame into snapshot / applySnapshot / render with each stage's share, making
+  it clear that paint dominates and parse/snapshot are cheap. `runCommand` now
+  returns the command's result so async commands can be awaited by the host.
+
 ## [0.4.0] - 2026-07-05
 
 ### Performance

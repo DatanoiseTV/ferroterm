@@ -56,7 +56,8 @@ function banner(term) {
 }
 
 export function runCommand(term, cmd) {
-  run(term, cmd);
+  // Return the result so async commands (benchmark) can be awaited by the host.
+  return run(term, cmd);
 }
 
 function run(term, cmd) {
@@ -99,7 +100,7 @@ function help(term) {
       '  ' + c('1;33', 'links') + '     print clickable hyperlinks (OSC 8 + auto)',
       '  ' + c('1;33', 'sixel') + '     draw a Sixel image (graphics)',
       '  ' + c('1;33', 'loadtest') + ' [MB]  stream N MB and report MB/s',
-      '  ' + c('1;33', 'benchmark') + ' [MB] full suite: parse scenarios + renderer paint',
+      '  ' + c('1;33', 'benchmark') + ' [MB] parse throughput + renderer paint + per-frame pipeline',
       '  ' + c('1;33', 'clear') + '     clear the screen',
       '',
     ].join('\r\n') + '\r\n'
@@ -337,12 +338,15 @@ function benchmark(term, mb) {
     return { name, col, mb: bytes.length / 1e6, ms, mbps: bytes.length / 1e6 / (ms / 1000) };
   });
 
-  // Renderer paint comparison (async), then print everything together so the
-  // fullscreen paint frames don't overwrite the result tables.
+  // Renderer paint comparison + per-frame pipeline breakdown (async), then print
+  // everything together so the fullscreen paint frames don't overwrite the
+  // result tables.
   return measureRenderers(term).then((paint) => {
+    const pipe = measurePipeline(term);
     term.write('\x1b[2J\x1b[H');
     printParseTable(term, results, mb);
     printPaintTable(term, paint, term.cols, term.rows);
+    printPipelineTable(term, pipe);
   });
 }
 
@@ -362,32 +366,59 @@ function fullScreenFrame(term, frame) {
   return s;
 }
 
+// Best-of-N over a tight loop, reporting ms/call. Averaging over many calls
+// beats the browser's 100us performance.now() clamp; a tight loop isolates
+// compute from the ~60Hz requestAnimationFrame cadence (the old benchmark timed
+// write()+rAF, so it measured vsync delivery and parse cost, not paint).
+function bestMs(fn, trials = 5, iters = 40) {
+  let best = Infinity;
+  for (let t = 0; t < trials; t++) {
+    const t0 = performance.now();
+    for (let i = 0; i < iters; i++) fn();
+    best = Math.min(best, (performance.now() - t0) / iters);
+  }
+  return best;
+}
+
+// Measure raw render() compute for each renderer over an identical, already
+// parsed full-screen frame (background + glyph in every cell). Parsing and
+// snapshotting happen once, up front, so this is pure paint time.
 async function measureRenderers(term) {
   const original = term.rendererName?.toLowerCase().includes('canvas') ? 'canvas' : 'webgl';
+  const content = fullScreenFrame(term, 0);
   const out = [];
   for (const kind of ['canvas', 'webgl']) {
     term.setRenderer(kind);
     await nextFrame();
-    // warm up (glyph atlas / first paint)
-    term.write(fullScreenFrame(term, 0));
-    await nextFrame();
-    const frames = 24;
-    let total = 0;
-    let best = Infinity;
-    for (let f = 1; f <= frames; f++) {
-      const t0 = performance.now();
-      term.write(fullScreenFrame(term, f));
-      await nextFrame();
-      const dt = performance.now() - t0;
-      total += dt;
-      best = Math.min(best, dt);
-    }
-    out.push({ kind: term.rendererName, avg: total / frames, best });
+    term.write(content); // parse once
+    await nextFrame(); // one real frame syncs the model and warms the atlas
+    const R = term.renderer, model = term.model;
+    const cursor = { x: model.cursorX, y: model.cursorY, show: false, style: 'block', focused: true };
+    for (let i = 0; i < 10; i++) R.render(model, [], true, cursor, null, null); // warm
+    const best = bestMs(() => R.render(model, [], true, cursor, null, null));
+    out.push({ kind: term.rendererName, best });
   }
   term.setRenderer(original);
   await nextFrame();
   term.write('\x1b[2J\x1b[H');
   return out;
+}
+
+// Break a full-screen frame into its three stages so it's clear where per-frame
+// time goes: snapshot (wasm -> zero-copy view), applySnapshot (JS de-interleave)
+// and render (the active renderer's paint).
+function measurePipeline(term) {
+  term.write(fullScreenFrame(term, 7));
+  const snap = bestMs(() => term._snapshot(true), 5, 50);
+  const s = term._snapshot(true);
+  const apply = bestMs(() => term.model.applySnapshot(s), 5, 50);
+  term.model.applySnapshot(s);
+  const R = term.renderer, model = term.model;
+  const cursor = { x: model.cursorX, y: model.cursorY, show: false, style: 'block', focused: true };
+  for (let i = 0; i < 10; i++) R.render(model, [], true, cursor, null, null);
+  const render = bestMs(() => R.render(model, [], true, cursor, null, null));
+  term.write('\x1b[2J\x1b[H');
+  return { kind: term.rendererName, snap, apply, render, frame: snap + apply + render };
 }
 
 // --- table formatting ---
@@ -453,20 +484,48 @@ function printParseTable(term, results, mb) {
 function printPaintTable(term, paint, cols, rows) {
   const trows = paint.map((p) => [
     c('1;37', p.kind),
-    `${p.avg.toFixed(2)} ms`,
-    `${p.best.toFixed(2)} ms`,
-    c('1;92', `${(1000 / p.avg).toFixed(0)} fps`),
+    `${p.best.toFixed(3)} ms`,
+    c('1;92', `${(1000 / p.best).toFixed(0)} fps`),
   ]);
   drawTable(
     term,
-    c('1;96', ` renderer paint `) + c('90', `(full ${cols}x${rows} redraw/frame) `),
+    c('1;96', ` renderer paint `) + c('90', `(full ${cols}x${rows} redraw, render() only) `),
     [
       { head: 'renderer', align: 'l' },
-      { head: 'avg frame', align: 'r' },
-      { head: 'best frame', align: 'r' },
+      { head: 'render time', align: 'r' },
       { head: 'fps', align: 'r' },
     ],
     trows
   );
-  term.write(c('90', '  (lower frame time is better; both redraw every cell each frame)') + '\r\n');
+  term.write(
+    c('90', '  (compute time per full-screen render, excluding parse and vsync;') + '\r\n' +
+      c('90', '   Canvas2D fillText is GPU-accelerated on real hardware, faster than shown here)') + '\r\n\r\n'
+  );
+}
+
+function printPipelineTable(term, p) {
+  const pct = (x) => `${((x / p.frame) * 100).toFixed(0)}%`;
+  const rows = [
+    ['snapshot (wasm)', `${p.snap.toFixed(3)} ms`, pct(p.snap), c('90', 'zero-copy view')],
+    ['applySnapshot (JS)', `${p.apply.toFixed(3)} ms`, pct(p.apply), c('90', 'de-interleave')],
+    ['render (' + p.kind + ')', `${p.render.toFixed(3)} ms`, pct(p.render), c('90', 'paint')],
+  ];
+  rows.push([
+    c('1;97', 'full frame'),
+    c('1;92', `${p.frame.toFixed(3)} ms`),
+    c('1;92', `${(1000 / p.frame).toFixed(0)} fps`),
+    '',
+  ]);
+  drawTable(
+    term,
+    c('1;96', ` per-frame pipeline `) + c('90', `(${p.kind}, full-screen frame) `),
+    [
+      { head: 'stage', align: 'l' },
+      { head: 'time', align: 'r' },
+      { head: 'share', align: 'r' },
+      { head: 'notes', align: 'l' },
+    ],
+    rows
+  );
+  term.write(c('90', '  (a full-screen frame; typical frames touch far fewer cells)') + '\r\n');
 }

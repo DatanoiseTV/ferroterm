@@ -66,7 +66,19 @@ void main() {
   gl_FragColor = vec4(outRGB, outA);
 }`;
 
-const FLOATS_PER_INSTANCE = 17; // rect(4) fg(4) bg(4) tex(4) tint(1)
+// Instance layout, 44 bytes = 11 four-byte words:
+//   rect(4 float) tex(4 float) tint(1 float) fg(1 u32) bg(1 u32)
+// Colors are packed RGBA8 (0xAABBGGRR) and read by the shader as normalized
+// UNSIGNED_BYTE vec4s, so the render loop never divides by 255 and each cell
+// writes 11 words instead of 17 floats.
+const WORDS_PER_INSTANCE = 11;
+const F_RECT = 0, F_TEX = 4, F_TINT = 8, U_FG = 9, U_BG = 10;
+
+// Pack r,g,b (0..255) and a (0..255) into 0xAABBGGRR for a normalized
+// UNSIGNED_BYTE vec4 (little-endian -> byte0=r ... byte3=a).
+function packRGBA(r, g, b, a) {
+  return (r | (g << 8) | (b << 16) | (a << 24)) >>> 0;
+}
 
 function isColorGlyph(cp) {
   return (
@@ -107,7 +119,9 @@ export class WebGLRenderer {
     this.atlasCanvas = document.createElement('canvas');
     this.atlasCtx = this.atlasCanvas.getContext('2d', { willReadFrequently: false });
     this.glyphCache = new Map();
-    this.inst = new Float32Array(0);
+    // Instance buffer (aliased float / u32 / byte views) is allocated in resize.
+    this.instAB = null;
+    this.instF = this.instU = this.instBytes = null;
   }
 
   get element() {
@@ -187,8 +201,13 @@ export class WebGLRenderer {
     this._resetAtlas();
 
     // One instance per cell, plus a margin for cursor / decoration instances.
+    // Float and u32 views alias one buffer so a cell's rect/tex/tint (floats)
+    // and packed colors (u32) are written into the same interleaved record.
     const maxInstances = model.cols * model.rows + model.cols + 8;
-    this.inst = new Float32Array(maxInstances * FLOATS_PER_INSTANCE);
+    this.instAB = new ArrayBuffer(maxInstances * WORDS_PER_INSTANCE * 4);
+    this.instF = new Float32Array(this.instAB);
+    this.instU = new Uint32Array(this.instAB);
+    this.instBytes = new Uint8Array(this.instAB);
   }
 
   _resetAtlas() {
@@ -262,21 +281,21 @@ export class WebGLRenderer {
     return g;
   }
 
-  // Append one instance. `tex` null => background-only (no glyph). Colors are
-  // 0..1. Writes 17 floats at `this._o`.
-  _inst(x, y, w, h, fr, fg, fb, fa, br, bg, bb, ba, tex, tint) {
-    const v = this.inst;
-    let o = this._o;
-    v[o] = x; v[o + 1] = y; v[o + 2] = w; v[o + 3] = h;
-    v[o + 4] = fr; v[o + 5] = fg; v[o + 6] = fb; v[o + 7] = fa;
-    v[o + 8] = br; v[o + 9] = bg; v[o + 10] = bb; v[o + 11] = ba;
+  // Append one instance. `tex` null => background-only (no glyph). `fgP`/`bgP`
+  // are packed RGBA8 (see packRGBA). Writes 11 words at `this._o`.
+  _inst(x, y, w, h, fgP, bgP, tex, tint) {
+    const f = this.instF, u = this.instU;
+    const o = this._o;
+    f[o + F_RECT] = x; f[o + F_RECT + 1] = y; f[o + F_RECT + 2] = w; f[o + F_RECT + 3] = h;
     if (tex) {
-      v[o + 12] = tex.u0; v[o + 13] = tex.v0; v[o + 14] = tex.u1; v[o + 15] = tex.v1;
+      f[o + F_TEX] = tex.u0; f[o + F_TEX + 1] = tex.v0; f[o + F_TEX + 2] = tex.u1; f[o + F_TEX + 3] = tex.v1;
     } else {
-      v[o + 12] = -1; v[o + 13] = -1; v[o + 14] = -1; v[o + 15] = -1;
+      f[o + F_TEX] = -1; f[o + F_TEX + 1] = -1; f[o + F_TEX + 2] = -1; f[o + F_TEX + 3] = -1;
     }
-    v[o + 16] = tint;
-    this._o = o + FLOATS_PER_INSTANCE;
+    f[o + F_TINT] = tint;
+    u[o + U_FG] = fgP;
+    u[o + U_BG] = bgP;
+    this._o = o + WORDS_PER_INSTANCE;
   }
 
   render(model, _dirtyRows, _full, cursor, selection, hoverLink) {
@@ -291,7 +310,10 @@ export class WebGLRenderer {
     const cols = model.cols;
     const bgRgb = pal.bgRgb;
     const dbr = bgRgb[0] / 255, dbg = bgRgb[1] / 255, dbb = bgRgb[2] / 255;
-    const sel = selection ? this._selCss() : null;
+    // Default background packed with alpha 0: the clear (same color) shows
+    // through, so default-background cells need no fill.
+    const defBgP = packRGBA(bgRgb[0], bgRgb[1], bgRgb[2], 0);
+    const sel = selection ? this._selCss255() : null; // [r,g,b] 0..255, a 0..1
     const t = Math.max(1, Math.round(dpr)); // decoration thickness (px)
 
     const cpA = model.cp, fgA = model.fg, bgA = model.bg, flagsA = model.flags,
@@ -311,37 +333,39 @@ export class WebGLRenderer {
         const hasGlyph = cp !== 0x20 && cp !== 0 && !(flags & ATTR.INVISIBLE);
         const selected = selRange && x >= selRange[0] && x < selRange[1];
 
-        // Resolve background (rgb always; alpha 1 only when it must be filled).
-        const bgKind = bgA[i] >>> 24;
-        let br, bg, bb, ba;
+        // Background, packed RGBA8; alpha 255 only when the cell must be filled.
+        let bgP, filled;
         if (inverse) {
           const c = pal.resolveRgb(fgA[i], true, false);
-          br = c[0] / 255; bg = c[1] / 255; bb = c[2] / 255; ba = 1;
-        } else if (bgKind !== 0) {
+          bgP = packRGBA(c[0], c[1], c[2], 255); filled = true;
+        } else if (bgA[i] >>> 24 !== 0) {
           const c = pal.resolveRgb(bgA[i], false, false);
-          br = c[0] / 255; bg = c[1] / 255; bb = c[2] / 255; ba = 1;
+          bgP = packRGBA(c[0], c[1], c[2], 255); filled = true;
         } else {
-          br = dbr; bg = dbg; bb = dbb; ba = 0; // default bg -> clear shows it
+          bgP = defBgP; filled = false;
         }
         if (selected) {
-          // Selection tints the background (under the glyph), matching the
-          // batched renderer's translucent overlay.
-          const sa = sel[3];
-          br = br * (1 - sa) + sel[0] * sa;
-          bg = bg * (1 - sa) + sel[1] * sa;
-          bb = bb * (1 - sa) + sel[2] * sa;
-          ba = 1;
+          // Selection tints the background under the glyph (matches the batched
+          // renderer's translucent overlay). Blend in 0..255, then repack.
+          const sa = sel[3], ia = 1 - sa;
+          bgP = packRGBA(
+            ((bgP & 0xff) * ia + sel[0] * sa) | 0,
+            (((bgP >> 8) & 0xff) * ia + sel[1] * sa) | 0,
+            (((bgP >> 16) & 0xff) * ia + sel[2] * sa) | 0,
+            255
+          );
+          filled = true;
         }
 
         // Foreground / glyph.
-        let fr = 0, fgc = 0, fb = 0, fa = 1, glyph = null, tint = 1;
+        let fgP = 0, glyph = null, tint = 1, fcR = 0, fcG = 0, fcB = 0;
         if (hasGlyph) {
           const bold = (flags & ATTR.BOLD) !== 0;
           const fc = inverse
             ? pal.resolveRgb(bgA[i], false, false)
             : pal.resolveRgb(fgA[i], true, bold);
-          fr = fc[0] / 255; fgc = fc[1] / 255; fb = fc[2] / 255;
-          fa = flags & ATTR.DIM ? 0.6 : 1;
+          fcR = fc[0]; fcG = fc[1]; fcB = fc[2];
+          fgP = packRGBA(fcR, fcG, fcB, flags & ATTR.DIM ? 153 : 255);
           const cells = flags & ATTR.WIDE ? 2 : 1;
           const styleBits =
             (bold ? 1 : 0) | (flags & ATTR.ITALIC ? 2 : 0) | (isColorGlyph(cp) ? 4 : 0);
@@ -350,24 +374,27 @@ export class WebGLRenderer {
           tint = glyph.tint;
         }
 
-        if (ba === 0 && !hasGlyph) continue; // nothing to draw
+        if (!filled && !hasGlyph) continue; // nothing to draw
         const w = flags & ATTR.WIDE ? cw * 2 : cw;
-        this._inst(x * cw, yc, w, ch, fr, fgc, fb, fa, br, bg, bb, ba, glyph, tint);
+        this._inst(x * cw, yc, w, ch, fgP, bgP, glyph, tint);
 
-        // Underline / strike / hover-link as thin background-only instances,
-        // drawn after the cell (on top of its glyph).
+        // Underline / strike / hover-link as thin background-only instances
+        // (color carried in the bg slot), drawn after the cell's glyph.
         const hovered =
           hoverLink && hoverLink.y === y && x >= hoverLink.x0 && x <= hoverLink.x1;
-        if ((flags & ATTR.UNDERLINE || hovered) && hasGlyph) {
-          const dc = fr, dg = fgc, db = fb;
-          this._inst(x * cw, yc + ch - t * 2, w, t, 0, 0, 0, 1, dc, dg, db, 1, null, 0);
-        } else if (flags & ATTR.UNDERLINE || hovered) {
-          const c = pal.resolveRgb(fgA[i], true, false);
-          this._inst(x * cw, yc + ch - t * 2, w, t, 0, 0, 0, 1, c[0] / 255, c[1] / 255, c[2] / 255, 1, null, 0);
-        }
-        if (flags & ATTR.STRIKETHROUGH) {
-          const c = hasGlyph ? [fr * 255, fgc * 255, fb * 255] : pal.resolveRgb(fgA[i], true, false);
-          this._inst(x * cw, yc + ch * 0.55, w, t, 0, 0, 0, 1, c[0] / 255, c[1] / 255, c[2] / 255, 1, null, 0);
+        if (flags & (ATTR.UNDERLINE | ATTR.STRIKETHROUGH) || hovered) {
+          let dcP;
+          if (hasGlyph) dcP = packRGBA(fcR, fcG, fcB, 255);
+          else {
+            const c = pal.resolveRgb(fgA[i], true, false);
+            dcP = packRGBA(c[0], c[1], c[2], 255);
+          }
+          if (flags & ATTR.UNDERLINE || hovered) {
+            this._inst(x * cw, yc + ch - t * 2, w, t, 0, dcP, null, 0);
+          }
+          if (flags & ATTR.STRIKETHROUGH) {
+            this._inst(x * cw, yc + ch * 0.55, w, t, 0, dcP, null, 0);
+          }
         }
       }
     }
@@ -390,16 +417,18 @@ export class WebGLRenderer {
     gl.vertexAttribPointer(this.loc.aCorner, 2, gl.FLOAT, false, 0, 0);
     this.ext.vertexAttribDivisorANGLE(this.loc.aCorner, 0);
 
-    // Instance attributes.
-    const nInst = this._o / FLOATS_PER_INSTANCE;
+    // Instance attributes. rect/tex/tint are floats; fg/bg are packed RGBA8
+    // read as normalized UNSIGNED_BYTE, all interleaved in one 44-byte record.
+    const nInst = this._o / WORDS_PER_INSTANCE;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, this.inst.subarray(0, this._o), gl.STREAM_DRAW);
-    const stride = FLOATS_PER_INSTANCE * 4;
-    this._bindInstanceAttr(this.loc.aRect, 4, stride, 0);
-    this._bindInstanceAttr(this.loc.aFg, 4, stride, 16);
-    this._bindInstanceAttr(this.loc.aBg, 4, stride, 32);
-    this._bindInstanceAttr(this.loc.aTex, 4, stride, 48);
-    this._bindInstanceAttr(this.loc.aTint, 1, stride, 64);
+    gl.bufferData(gl.ARRAY_BUFFER, this.instBytes.subarray(0, this._o * 4), gl.STREAM_DRAW);
+    const stride = WORDS_PER_INSTANCE * 4; // 44
+    const F = gl.FLOAT, UB = gl.UNSIGNED_BYTE;
+    this._bindInstanceAttr(this.loc.aRect, 4, F, false, stride, F_RECT * 4);
+    this._bindInstanceAttr(this.loc.aTex, 4, F, false, stride, F_TEX * 4);
+    this._bindInstanceAttr(this.loc.aTint, 1, F, false, stride, F_TINT * 4);
+    this._bindInstanceAttr(this.loc.aFg, 4, UB, true, stride, U_FG * 4);
+    this._bindInstanceAttr(this.loc.aBg, 4, UB, true, stride, U_BG * 4);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -407,10 +436,10 @@ export class WebGLRenderer {
     this.ext.drawArraysInstancedANGLE(gl.TRIANGLES, 0, 6, nInst);
   }
 
-  _bindInstanceAttr(loc, size, stride, offset) {
+  _bindInstanceAttr(loc, size, type, normalized, stride, offset) {
     const gl = this.gl;
     gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, offset);
+    gl.vertexAttribPointer(loc, size, type, normalized, stride, offset);
     this.ext.vertexAttribDivisorANGLE(loc, 1);
   }
 
@@ -420,50 +449,45 @@ export class WebGLRenderer {
     const w = flags & ATTR.WIDE ? cw * 2 : cw;
     const px = cursor.x * cw;
     const py = cursor.y * ch;
-    const c = this._cursorRgb();
+    const cP = packRGBA(...this._css2rgb255(this.palette.cursor), 255);
     const style = cursor.style || 'block';
     const dpr = this.metrics.dpr;
     if (!cursor.focused) {
       const t = Math.max(1, Math.round(dpr));
-      this._inst(px, py, w, t, 0, 0, 0, 1, c[0], c[1], c[2], 1, null, 0);
-      this._inst(px, py + ch - t, w, t, 0, 0, 0, 1, c[0], c[1], c[2], 1, null, 0);
-      this._inst(px, py, t, ch, 0, 0, 0, 1, c[0], c[1], c[2], 1, null, 0);
-      this._inst(px + w - t, py, t, ch, 0, 0, 0, 1, c[0], c[1], c[2], 1, null, 0);
+      this._inst(px, py, w, t, 0, cP, null, 0);
+      this._inst(px, py + ch - t, w, t, 0, cP, null, 0);
+      this._inst(px, py, t, ch, 0, cP, null, 0);
+      this._inst(px + w - t, py, t, ch, 0, cP, null, 0);
     } else if (style === 'bar') {
       const t = Math.max(1, Math.round(2 * dpr));
-      this._inst(px, py, t, ch, 0, 0, 0, 1, c[0], c[1], c[2], 1, null, 0);
+      this._inst(px, py, t, ch, 0, cP, null, 0);
     } else if (style === 'underline') {
       const t = Math.max(1, Math.round(2 * dpr));
-      this._inst(px, py + ch - t, w, t, 0, 0, 0, 1, c[0], c[1], c[2], 1, null, 0);
+      this._inst(px, py + ch - t, w, t, 0, cP, null, 0);
     } else {
       // Block: fill the cell with the cursor color, then re-draw the glyph in
       // the accent color on top.
       const cp = model.cp[i];
       const cells = flags & ATTR.WIDE ? 2 : 1;
       if (cp !== 0x20 && cp !== 0) {
-        const ca = this._cursorAccentRgb();
+        const caP = packRGBA(...this._css2rgb255(this.palette.cursorAccent), 255);
         const styleBits =
           (flags & ATTR.BOLD ? 1 : 0) | (flags & ATTR.ITALIC ? 2 : 0) | (isColorGlyph(cp) ? 4 : 0);
         const cluster = model.grapheme[i] !== 0 ? model.clusterAt(i) : null;
         const g = this._glyph(cp, cluster, styleBits, cells);
-        this._inst(px, py, w, ch, ca[0], ca[1], ca[2], 1, c[0], c[1], c[2], 1, g, g.tint);
+        this._inst(px, py, w, ch, caP, cP, g, g.tint);
       } else {
-        this._inst(px, py, w, ch, 0, 0, 0, 1, c[0], c[1], c[2], 1, null, 0);
+        this._inst(px, py, w, ch, 0, cP, null, 0);
       }
     }
   }
 
-  _cursorRgb() {
-    return this._css2rgb(this.palette.cursor);
-  }
-  _cursorAccentRgb() {
-    return this._css2rgb(this.palette.cursorAccent);
-  }
-  _selCss() {
+  // Selection color as [r, g, b] (0..255) plus alpha (0..1).
+  _selCss255() {
     const m = /rgba?\(([^)]+)\)/.exec(this.palette.selection);
-    if (!m) return [0.4, 0.6, 1, 0.35];
+    if (!m) return [102, 153, 255, 0.35];
     const p = m[1].split(',').map((s) => parseFloat(s));
-    return [p[0] / 255, p[1] / 255, p[2] / 255, p[3] === undefined ? 1 : p[3]];
+    return [p[0] | 0, p[1] | 0, p[2] | 0, p[3] === undefined ? 1 : p[3]];
   }
   _selSpan(sel, y, cols) {
     if (sel.sy === sel.ey) return [sel.sx, sel.ex];
@@ -471,19 +495,20 @@ export class WebGLRenderer {
     if (y === sel.ey) return [0, sel.ex];
     return [0, cols];
   }
-  _css2rgb(css) {
+  // CSS color (#hex or rgb()) as [r, g, b] in 0..255.
+  _css2rgb255(css) {
     if (css[0] === '#') {
       let h = css.slice(1);
       if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
       const n = parseInt(h, 16);
-      return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
     }
     const m = /rgba?\(([^)]+)\)/.exec(css);
     if (m) {
       const p = m[1].split(',').map((s) => parseFloat(s));
-      return [p[0] / 255, p[1] / 255, p[2] / 255];
+      return [p[0] | 0, p[1] | 0, p[2] | 0];
     }
-    return [1, 1, 1];
+    return [255, 255, 255];
   }
 
   dispose() {
