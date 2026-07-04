@@ -414,8 +414,9 @@ export class Ferroterm {
     this._input = ta;
 
     // Image overlay: a canvas stacked above the text renderer (positioned, so it
-    // sits over the static-flow renderer canvas) on which decoded Sixel images
-    // are composited. Renderer-agnostic, so it works for Canvas2D and WebGL.
+    // sits over the static-flow renderer canvas) on which decoded Sixel and
+    // iTerm2 (OSC 1337) images are composited. Renderer-agnostic, so it works
+    // for Canvas2D and WebGL.
     const iov = document.createElement('canvas');
     iov.className = 'ft-images';
     Object.assign(iov.style, {
@@ -424,7 +425,7 @@ export class Ferroterm {
     c.appendChild(iov);
     this._imgOverlay = iov;
     this._imgCtx = iov.getContext('2d');
-    this._imgCache = new Map(); // id -> { canvas, w, h }
+    this._imgCache = new Map(); // id -> { img, w, h, pending? }
     this._imagesVersion = -1;
   }
 
@@ -450,10 +451,21 @@ export class Ferroterm {
     const ids = this.term.imageIds();
     const live = new Set(ids);
     for (const id of [...this._imgCache.keys()]) {
-      if (!live.has(id)) this._imgCache.delete(id);
+      if (!live.has(id)) {
+        const e = this._imgCache.get(id);
+        if (e && e.img && e.img.close) e.img.close(); // free an ImageBitmap
+        this._imgCache.delete(id);
+      }
     }
     for (const id of ids) {
       if (this._imgCache.has(id)) continue;
+      // iTerm2 (OSC 1337) images arrive as encoded file bytes; let the browser
+      // decode them natively. Sixel images arrive as ready RGBA pixels.
+      const mime = this.term.imageMime(id);
+      if (mime) {
+        this._decodeEncodedImage(id, mime);
+        continue;
+      }
       const [w, h] = this.term.imageSize(id);
       if (!w || !h) continue;
       const rgba = this.term.imageRgba(id);
@@ -462,8 +474,26 @@ export class Ferroterm {
       cv.width = w;
       cv.height = h;
       cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
-      this._imgCache.set(id, { canvas: cv, w, h });
+      this._imgCache.set(id, { img: cv, w, h });
     }
+  }
+
+  /**
+   * Decode an encoded (iTerm2) image asynchronously via `createImageBitmap`.
+   * A `pending` placeholder reserves the cache slot so repeated syncs don't
+   * re-decode; when the bitmap resolves we swap it in and repaint.
+   */
+  _decodeEncodedImage(id, mime) {
+    const enc = this.term.imageEncoded(id);
+    if (!enc || enc.length === 0) return;
+    this._imgCache.set(id, { img: null, w: 0, h: 0, pending: true });
+    const blob = new Blob([enc], { type: mime });
+    createImageBitmap(blob).then((bmp) => {
+      const e = this._imgCache.get(id);
+      if (!e || !e.pending) { bmp.close && bmp.close(); return; } // evicted meanwhile
+      this._imgCache.set(id, { img: bmp, w: bmp.width, h: bmp.height });
+      this._drawImages();
+    }).catch(() => { this._imgCache.delete(id); });
   }
 
   /** Draw all live images at their current (scroll-aware) placements. */
@@ -477,12 +507,12 @@ export class Ferroterm {
     for (let i = 0; i + 4 < pl.length; i += 5) {
       const id = pl[i], row = pl[i + 1], col = pl[i + 2], w = pl[i + 3], h = pl[i + 4];
       const tex = this._imgCache.get(id);
-      if (!tex) continue;
+      if (!tex || !tex.img) continue; // skip a still-decoding image
       const x = Math.round(col * cellW * dpr);
       const y = Math.round(row * cellH * dpr);
       // Cull images fully outside the viewport.
       if (y + h <= 0 || y >= this._imgOverlay.height) continue;
-      ctx.drawImage(tex.canvas, x, y, w, h);
+      ctx.drawImage(tex.img, x, y, w, h);
     }
   }
 

@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-07-05
+
+### Added
+- **iTerm2 inline images (OSC 1337 `File=`).** ferroterm now renders images sent
+  via the iTerm2 protocol, in addition to Sixel. The Rust core parses the
+  protocol, base64-decodes the payload, sniffs the pixel dimensions and container
+  format from the file header (PNG / JPEG / GIF / BMP / WebP — no full decode),
+  and lays the image out in whole cells (honoring `width=`/`height=` in cells,
+  pixels, percent or `auto`, with aspect-ratio preservation). The actual pixel
+  decode is delegated to the browser (`createImageBitmap`), so **no image decoder
+  is linked into the WASM core** — any format the browser supports works, and the
+  bundle stays small. Images share the existing renderer-agnostic overlay used by
+  Sixel, so they work under both the Canvas2D and WebGL renderers and track
+  scrolling. The OSC payload cap is raised for `1337;File=` sequences (to 8 MB,
+  still bounded) so real images aren't truncated. Verified end-to-end headlessly:
+  a page-generated PNG fed as OSC 1337 decodes to the exact expected pixel on the
+  overlay and advances the cursor below the image.
+- **Standalone renderer benchmark page** (`examples/benchmark.html`). Reports the
+  unmasked WebGL renderer (real GPU vs a software fallback like SwiftShader), then
+  runs render-compute, per-frame pipeline, and incremental-vs-full timings as
+  tables plus copyable JSON. The measurement helpers are shared with the demo's
+  `benchmark` command (`web/src/bench.js`), so both report identical numbers.
+
+### Changed
+- The image overlay and cache in the web component now handle both ready-RGBA
+  (Sixel) and encoded (iTerm2) images; encoded images decode asynchronously and
+  repaint when ready. `Terminal` gains `imageEncoded(id)` / `imageMime(id)`.
+
 ## [0.5.0] - 2026-07-05
 
 ### Performance

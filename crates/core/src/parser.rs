@@ -18,6 +18,11 @@ const MAX_SUBPARAMS: usize = 8;
 const MAX_INTERMEDIATES: usize = 2;
 /// Cap on an OSC string payload to bound memory from a runaway sequence.
 const MAX_OSC_LEN: usize = 8 * 1024;
+/// Larger cap for the OSC 1337 `File=` inline-image payload (base64 of an image
+/// file). Still bounded so a runaway sequence can't exhaust memory.
+const MAX_OSC_IMAGE_LEN: usize = 8 * 1024 * 1024;
+/// Prefix that switches an OSC to the larger image cap.
+const OSC_IMAGE_PREFIX: &[u8] = b"1337;File=";
 
 /// Numeric parameters of a CSI/DCS sequence.
 ///
@@ -478,10 +483,27 @@ impl Parser {
                 self.enter_escape();
             }
             _ => {
-                if self.osc_raw.len() < MAX_OSC_LEN {
+                if self.osc_raw.len() < self.osc_cap() {
                     self.osc_raw.push(b);
                 }
             }
+        }
+    }
+
+    /// Effective size cap for the current OSC payload. An OSC 1337 `File=`
+    /// inline image gets the larger image cap; everything else the small one.
+    /// The prefix is short, so probing it on each appended byte is cheap.
+    fn osc_cap(&self) -> usize {
+        if self.osc_raw.len() >= OSC_IMAGE_PREFIX.len() {
+            if self.osc_raw.starts_with(OSC_IMAGE_PREFIX) {
+                MAX_OSC_IMAGE_LEN
+            } else {
+                MAX_OSC_LEN
+            }
+        } else {
+            // Still accumulating the prefix: only cap once past the small limit,
+            // which the prefix is far shorter than, so this never truncates it.
+            MAX_OSC_LEN
         }
     }
 

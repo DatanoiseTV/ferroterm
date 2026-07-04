@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>ferroterm inline-image test</title>
+<div id="term" style="width:800px;height:400px"></div>
+<script type="module">
+  // Feeds an iTerm2 OSC 1337 inline image (a solid-colour PNG generated in the
+  // page) and verifies the front-end decoded it and drew it to the image
+  // overlay. Results land on window.__imgResult for the CDP runner.
+  import { Ferroterm } from '../src/index.js';
+
+  const RED = [220, 40, 40];
+
+  function pngDataURI(w, h, [r, g, b]) {
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(0, 0, w, h);
+    return cv.toDataURL('image/png'); // "data:image/png;base64,...."
+  }
+
+  const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
+
+  try {
+    const term = await Ferroterm.create(document.getElementById('term'), {
+      renderer: 'webgl', fontSize: 14, cols: 60, rows: 20,
+    });
+    window.__t = term;
+
+    // 20x20 red PNG, asked to display as a 6x4 cell box.
+    const b64 = pngDataURI(20, 20, RED).split(',')[1];
+    term.write(`\x1b[H\x1b]1337;File=inline=1;width=6;height=4:${b64}\x07`);
+
+    // Let the frame paint, the async decode resolve, and the redraw happen.
+    await nextFrame();
+    for (let i = 0; i < 30 && (!window.__t._imgCache || !anyDecoded(term)); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await nextFrame();
+
+    const ov = term._imgOverlay;
+    const ctx = ov.getContext('2d');
+    // Sample near the centre of where the box should be (a few cells in).
+    const { cellW, cellH, dpr } = term.metrics;
+    const sx = Math.round(2 * cellW * dpr);
+    const sy = Math.round(1 * cellH * dpr);
+    const px = ctx.getImageData(sx, sy, 1, 1).data;
+
+    const wt = term.term; // the wasm Terminal carries the image API
+    const ids = [...wt.imageIds()];
+    window.__imgResult = {
+      ids: ids.length,
+      mime: ids.length ? wt.imageMime(ids[0]) : '',
+      encodedLen: ids.length ? wt.imageEncoded(ids[0]).length : 0,
+      size: ids.length ? Array.from(wt.imageSize(ids[0])) : [],
+      sample: [px[0], px[1], px[2], px[3]],
+      expected: RED,
+      cursorRow: term.model.cursorY,
+    };
+    window.__done = true;
+
+    function anyDecoded(t) {
+      for (const e of t._imgCache.values()) if (e && e.img) return true;
+      return false;
+    }
+  } catch (e) {
+    window.__error = String(e && e.stack || e);
+    window.__done = true;
+  }
+</script>

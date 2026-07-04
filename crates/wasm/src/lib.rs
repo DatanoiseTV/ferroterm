@@ -171,6 +171,19 @@ impl Terminal {
         self.inner.image_rgba(id)
     }
 
+    /// Raw encoded file bytes of image `id` (iTerm2 OSC 1337 path), empty for a
+    /// Sixel/RGBA image. The front-end decodes these with `createImageBitmap`.
+    #[wasm_bindgen(js_name = imageEncoded)]
+    pub fn image_encoded(&self, id: u32) -> Vec<u8> {
+        self.inner.image_encoded(id)
+    }
+
+    /// MIME hint for `imageEncoded(id)` (e.g. `image/png`), empty for RGBA.
+    #[wasm_bindgen(js_name = imageMime)]
+    pub fn image_mime(&self, id: u32) -> String {
+        self.inner.image_mime(id)
+    }
+
     /// `[width, height]` in pixels of image `id`.
     #[wasm_bindgen(js_name = imageSize)]
     pub fn image_size(&self, id: u32) -> Vec<u32> {

@@ -110,6 +110,20 @@ async function main() {
     if (err) throw new Error('fixture error: ' + err);
 
     const data = (await send('Runtime.evaluate', { expression: 'window.__results', returnByValue: true })).result.result.value;
+
+    // Inline-image fixture: feed an iTerm2 OSC 1337 PNG and confirm the
+    // front-end decoded and drew it. Reuses the same page/session.
+    await send('Page.navigate', { url: `http://localhost:${PORT}/test/image.html` });
+    let imgDone = false;
+    for (let i = 0; i < 100; i++) {
+      const r = await send('Runtime.evaluate', { expression: '!!window.__done', returnByValue: true });
+      if (r.result?.result?.value) { imgDone = true; break; }
+      await sleep(100);
+    }
+    const imgErr = (await send('Runtime.evaluate', { expression: 'window.__error || null', returnByValue: true })).result.result.value;
+    const image = imgDone && !imgErr
+      ? (await send('Runtime.evaluate', { expression: 'window.__imgResult', returnByValue: true })).result.result.value
+      : null;
     closeWs();
 
     const T = data.theme;
@@ -139,6 +153,26 @@ async function main() {
       const ok = d === 0;
       console.log(`    ${ok ? 'PASS' : 'FAIL'}  ${key.padEnd(15)} max channel diff ${d}`);
       if (!ok) failures++;
+    }
+
+    // Inline image (iTerm2 OSC 1337): decoded, drawn, cursor advanced.
+    console.log('\n  iTerm2 inline image (OSC 1337)');
+    if (!image) {
+      console.log(`    FAIL  fixture did not produce a result${imgErr ? ': ' + imgErr : ''}`);
+      failures++;
+    } else {
+      const checks = [
+        ['image placed', image.ids === 1],
+        ['mime image/png', image.mime === 'image/png'],
+        ['bytes decoded', image.encodedLen > 0],
+        ['pixel drawn', close(image.sample, image.expected)],
+        ['cursor advanced', image.cursorRow === 4],
+      ];
+      for (const [name, ok] of checks) {
+        console.log(`    ${ok ? 'PASS' : 'FAIL'}  ${name}`);
+        if (!ok) failures++;
+      }
+      console.log(`          sample [${image.sample}] expected ~[${image.expected}], box [${image.size}]`);
     }
 
     console.log(`\n  ${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}\n`);

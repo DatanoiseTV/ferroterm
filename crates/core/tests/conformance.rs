@@ -156,6 +156,86 @@ fn osc8_hyperlink() {
     assert_eq!(t.active_line(0)[4].link, 0);
 }
 
+/// Encode bytes as standard base64 (test-local; the core only decodes).
+fn b64(data: &[u8]) -> String {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(A[(n >> 18 & 63) as usize] as char);
+        out.push(A[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            A[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// A minimal PNG header (signature + IHDR) declaring `w`x`h`. Enough for the
+/// core's format/size sniff; the front-end decodes real pixels.
+fn png_header(w: u32, h: u32) -> Vec<u8> {
+    let mut b = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    b.extend_from_slice(&[0, 0, 0, 13]);
+    b.extend_from_slice(b"IHDR");
+    b.extend_from_slice(&w.to_be_bytes());
+    b.extend_from_slice(&h.to_be_bytes());
+    b
+}
+
+#[test]
+fn osc_1337_inline_image_places_and_advances() {
+    let mut t = term();
+    t.set_cell_pixels(10, 20);
+    let png = png_header(30, 40);
+    // width=3 height=2 cells; the base64 payload follows the ':'.
+    let seq = format!("\x1b]1337;File=inline=1;width=3;height=2:{}\x07", b64(&png));
+    t.feed(seq.as_bytes());
+
+    let ids = t.image_ids();
+    assert_eq!(ids.len(), 1);
+    let id = ids[0];
+    assert_eq!(t.image_mime(id), "image/png");
+    // Core stores the raw file bytes for the front-end to decode.
+    assert_eq!(t.image_encoded(id), png);
+    // 3x2 cells at 10x20 px/cell => 30x40 px display box.
+    assert_eq!(t.image_size(id), vec![30, 40]);
+    // Cursor dropped two rows (image height) and returned to column 0.
+    assert_eq!(t.cursor(), (0, 2));
+}
+
+#[test]
+fn osc_1337_auto_size_from_png_dimensions() {
+    let mut t = term();
+    t.set_cell_pixels(10, 20);
+    // 25x50 px image, no explicit size => ceil to 3x3 cells (30x60 box).
+    let png = png_header(25, 50);
+    let seq = format!("\x1b]1337;File=inline=1:{}\x07", b64(&png));
+    t.feed(seq.as_bytes());
+    let id = t.image_ids()[0];
+    assert_eq!(t.image_size(id), vec![30, 60]);
+}
+
+#[test]
+fn osc_1337_malformed_payload_is_ignored() {
+    let mut t = term();
+    // No ':' separator, and a non-image base64 — must not place anything.
+    t.feed(b"\x1b]1337;File=inline=1\x07");
+    t.feed(b"\x1b]1337;SetMark\x07");
+    assert!(t.image_ids().is_empty());
+}
+
 #[test]
 fn dsr_cursor_position_report() {
     let mut t = term();

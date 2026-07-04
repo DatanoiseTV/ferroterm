@@ -20,6 +20,7 @@
 
 mod cell;
 mod grid;
+mod img;
 mod keys;
 mod palette;
 mod parser;

@@ -138,18 +138,27 @@ pub struct Terminal {
     cell_px_h: usize,
 }
 
-/// A placed Sixel image.
+/// A placed inline image (Sixel, or an iTerm2 OSC 1337 `File=` image).
 struct ImageRec {
     id: u32,
     /// Absolute line serial of the image's top row (see `scrolled_off`).
     serial: i64,
     /// Left column (cell) of the image.
     col: usize,
+    /// Display box in device pixels. For Sixel this is the image's native size
+    /// (drawn 1:1); for an encoded image it is the cell box the front-end scales
+    /// the decoded bitmap into.
     width: usize,
     height: usize,
     /// Height in whole cells (for scroll/prune math).
     rows_cells: usize,
+    /// Decoded RGBA pixels (Sixel path); empty for an encoded image.
     rgba: Vec<u8>,
+    /// Raw image-file bytes (iTerm2 path); empty for Sixel. The front-end
+    /// decodes these natively (`createImageBitmap`) — no decoder in the core.
+    encoded: Vec<u8>,
+    /// MIME hint for `encoded`; empty for the Sixel/RGBA path.
+    mime: &'static str,
 }
 
 impl Terminal {
@@ -873,6 +882,13 @@ impl Terminal {
             Some("110") => self.osc_reset_dynamic(DynColor::Fg),
             Some("111") => self.osc_reset_dynamic(DynColor::Bg),
             Some("112") => self.osc_reset_dynamic(DynColor::Cursor),
+            // The parser split the payload on ';', but the `File=` args and the
+            // base64 use ';'/':' internally — rejoin everything after the `1337`
+            // code and hand the raw body to the image parser.
+            Some("1337") if params.len() > 1 => {
+                let body = params[1..].join(&b';');
+                self.osc_iterm_image(&body);
+            }
             _ => {}
         }
     }
@@ -1119,6 +1135,8 @@ impl Terminal {
             height: img.height,
             rows_cells,
             rgba: img.rgba,
+            encoded: Vec::new(),
+            mime: "",
         });
         self.images_version = self.images_version.wrapping_add(1);
         // Bound the number of live images.
@@ -1132,6 +1150,122 @@ impl Terminal {
             self.linefeed();
         }
         self.carriage_return();
+    }
+
+    /// Handle an iTerm2 inline image: `OSC 1337 ; File=<args> : <base64>`.
+    /// `body` is everything after the `1337;` code (i.e. `File=…:base64`). The
+    /// image bytes are decoded and stored; the browser decodes the pixels.
+    fn osc_iterm_image(&mut self, body: &[u8]) {
+        // Must start with the `File=` sub-command.
+        let Some(rest) = body.strip_prefix(b"File=") else {
+            return;
+        };
+        // Split the key=value args from the base64 payload on the first ':'.
+        let colon = match rest.iter().position(|&c| c == b':') {
+            Some(i) => i,
+            None => return,
+        };
+        let (args_raw, b64) = (&rest[..colon], &rest[colon + 1..]);
+
+        let Some(bytes) = crate::img::decode_base64(b64) else {
+            return;
+        };
+        if bytes.is_empty() {
+            return;
+        }
+
+        // Parse the `;`-separated key=value arguments.
+        let (mut w_arg, mut h_arg, mut preserve) =
+            (crate::img::Dim::Auto, crate::img::Dim::Auto, true);
+        for kv in args_raw.split(|&c| c == b';') {
+            let Ok(kv) = std::str::from_utf8(kv) else {
+                continue;
+            };
+            let Some((k, v)) = kv.split_once('=') else {
+                continue;
+            };
+            match k.trim().to_ascii_lowercase().as_str() {
+                "width" => w_arg = crate::img::Dim::parse(v),
+                "height" => h_arg = crate::img::Dim::parse(v),
+                "preserveaspectratio" => preserve = v.trim() != "0",
+                _ => {}
+            }
+        }
+        let mime = crate::img::detect_format(&bytes)
+            .map(|f| f.mime())
+            .unwrap_or("application/octet-stream");
+        let (nw, nh) = crate::img::sniff_dimensions(&bytes).unwrap_or((0, 0));
+
+        // Target display box in pixels. An axis given as `auto`/absent is left
+        // to be derived; with preserveAspectRatio (the default) a single given
+        // axis drives the other via the image's native ratio.
+        let px_w = self.dim_to_px(w_arg, self.cell_px_w, self.cols() * self.cell_px_w);
+        let px_h = self.dim_to_px(h_arg, self.cell_px_h, self.rows() * self.cell_px_h);
+        let aspect = |from: usize, num: u32, den: u32| -> usize {
+            if den > 0 {
+                ((from as u64 * num as u64) / den as u64) as usize
+            } else {
+                from
+            }
+        };
+        let (mut tw, mut th) = match (px_w, px_h, preserve) {
+            (Some(w), Some(h), _) => (w, h),
+            (Some(w), None, true) => (w, aspect(w, nh, nw)),
+            (None, Some(h), true) => (aspect(h, nw, nh), h),
+            (Some(w), None, false) => (w, nh as usize),
+            (None, Some(h), false) => (nw as usize, h),
+            (None, None, _) => (nw as usize, nh as usize),
+        };
+        // Fallback for a format whose size we can't sniff (rare): a readable
+        // default box; the browser still decodes and scales into it.
+        if tw == 0 || th == 0 {
+            tw = (self.cols() * self.cell_px_w / 2).max(self.cell_px_w);
+            th = (self.rows() * self.cell_px_h / 3).max(self.cell_px_h);
+        }
+
+        let cols_cells = tw.div_ceil(self.cell_px_w).clamp(1, self.cols().max(1));
+        let rows_cells = th.div_ceil(self.cell_px_h).max(1);
+        let width = cols_cells * self.cell_px_w;
+        let height = rows_cells * self.cell_px_h;
+        let col = self.buf().cursor.x;
+        let serial = self.scrolled_off + self.buf().cursor.y as i64;
+
+        let id = self.next_image_id;
+        self.next_image_id = self.next_image_id.wrapping_add(1).max(1);
+        self.images.push(ImageRec {
+            id,
+            serial,
+            col,
+            width,
+            height,
+            rows_cells,
+            rgba: Vec::new(),
+            encoded: bytes,
+            mime,
+        });
+        self.images_version = self.images_version.wrapping_add(1);
+        if self.images.len() > 256 {
+            self.images.remove(0);
+        }
+
+        for _ in 0..rows_cells {
+            self.linefeed();
+        }
+        self.carriage_return();
+    }
+
+    /// Turn one iTerm2 width/height request into a pixel target, or `None` for
+    /// `auto`/absent (the caller derives it). `cell_px` is the cell size on that
+    /// axis (for cell counts); `axis_px` is the terminal's pixel extent on that
+    /// axis (for percentages).
+    fn dim_to_px(&self, dim: crate::img::Dim, cell_px: usize, axis_px: usize) -> Option<usize> {
+        use crate::img::Dim;
+        match dim {
+            Dim::Auto => None,
+            Dim::Cells(n) => Some(n as usize * cell_px.max(1)),
+            Dim::Pixels(px) => Some(px as usize),
+            Dim::Percent(p) => Some((axis_px * p as usize) / 100),
+        }
     }
 
     /// Drop images that have scrolled entirely out of retained scrollback.
@@ -1175,6 +1309,25 @@ impl Terminal {
             .iter()
             .find(|im| im.id == id)
             .map(|im| im.rgba.clone())
+            .unwrap_or_default()
+    }
+
+    /// Raw encoded image-file bytes for image `id` (iTerm2 path), or empty for a
+    /// Sixel/RGBA image or a missing id. The front-end decodes these natively.
+    pub fn image_encoded(&self, id: u32) -> Vec<u8> {
+        self.images
+            .iter()
+            .find(|im| im.id == id)
+            .map(|im| im.encoded.clone())
+            .unwrap_or_default()
+    }
+
+    /// MIME hint for image `id`'s encoded bytes, or empty for the RGBA path.
+    pub fn image_mime(&self, id: u32) -> String {
+        self.images
+            .iter()
+            .find(|im| im.id == id)
+            .map(|im| im.mime.to_string())
             .unwrap_or_default()
     }
 
