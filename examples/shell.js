@@ -5,6 +5,8 @@
 // This is demo glue, not part of the library. In a real app you would pipe
 // `term.onData` to a PTY over a socket and `term.write` its output back.
 
+import { measureRenderers, measurePipeline } from '../web/src/bench.js';
+
 const ESC = '\x1b';
 const c = (n, s) => `${ESC}[${n}m${s}${ESC}[0m`;
 
@@ -350,76 +352,8 @@ function benchmark(term, mb) {
   });
 }
 
-const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
-
-function fullScreenFrame(term, frame) {
-  let s = '\x1b[H';
-  for (let y = 0; y < term.rows; y++) {
-    let line = '';
-    for (let x = 0; x < term.cols; x++) {
-      const cc = (x + y + frame) % 256;
-      line += `\x1b[48;5;${cc}m\x1b[38;5;${(cc + 128) % 256}m*`;
-    }
-    s += line + '\x1b[0m';
-    if (y < term.rows - 1) s += '\r\n';
-  }
-  return s;
-}
-
-// Best-of-N over a tight loop, reporting ms/call. Averaging over many calls
-// beats the browser's 100us performance.now() clamp; a tight loop isolates
-// compute from the ~60Hz requestAnimationFrame cadence (the old benchmark timed
-// write()+rAF, so it measured vsync delivery and parse cost, not paint).
-function bestMs(fn, trials = 5, iters = 40) {
-  let best = Infinity;
-  for (let t = 0; t < trials; t++) {
-    const t0 = performance.now();
-    for (let i = 0; i < iters; i++) fn();
-    best = Math.min(best, (performance.now() - t0) / iters);
-  }
-  return best;
-}
-
-// Measure raw render() compute for each renderer over an identical, already
-// parsed full-screen frame (background + glyph in every cell). Parsing and
-// snapshotting happen once, up front, so this is pure paint time.
-async function measureRenderers(term) {
-  const original = term.rendererName?.toLowerCase().includes('canvas') ? 'canvas' : 'webgl';
-  const content = fullScreenFrame(term, 0);
-  const out = [];
-  for (const kind of ['canvas', 'webgl']) {
-    term.setRenderer(kind);
-    await nextFrame();
-    term.write(content); // parse once
-    await nextFrame(); // one real frame syncs the model and warms the atlas
-    const R = term.renderer, model = term.model;
-    const cursor = { x: model.cursorX, y: model.cursorY, show: false, style: 'block', focused: true };
-    for (let i = 0; i < 10; i++) R.render(model, [], true, cursor, null, null); // warm
-    const best = bestMs(() => R.render(model, [], true, cursor, null, null));
-    out.push({ kind: term.rendererName, best });
-  }
-  term.setRenderer(original);
-  await nextFrame();
-  term.write('\x1b[2J\x1b[H');
-  return out;
-}
-
-// Break a full-screen frame into its three stages so it's clear where per-frame
-// time goes: snapshot (wasm -> zero-copy view), applySnapshot (JS de-interleave)
-// and render (the active renderer's paint).
-function measurePipeline(term) {
-  term.write(fullScreenFrame(term, 7));
-  const snap = bestMs(() => term._snapshot(true), 5, 50);
-  const s = term._snapshot(true);
-  const apply = bestMs(() => term.model.applySnapshot(s), 5, 50);
-  term.model.applySnapshot(s);
-  const R = term.renderer, model = term.model;
-  const cursor = { x: model.cursorX, y: model.cursorY, show: false, style: 'block', focused: true };
-  for (let i = 0; i < 10; i++) R.render(model, [], true, cursor, null, null);
-  const render = bestMs(() => R.render(model, [], true, cursor, null, null));
-  term.write('\x1b[2J\x1b[H');
-  return { kind: term.rendererName, snap, apply, render, frame: snap + apply + render };
-}
+// Renderer paint + per-frame pipeline measurement live in ../web/src/bench.js so
+// the demo command and the standalone examples/benchmark.html share one impl.
 
 // --- table formatting ---
 

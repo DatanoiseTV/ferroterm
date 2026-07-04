@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ferroterm — renderer benchmark</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      margin: 0; min-height: 100%;
+      background: #14151f; color: #c0caf5;
+      font: 13px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif;
+    }
+    main { max-width: 860px; margin: 0 auto; padding: 22px 18px 60px; }
+    h1 { font-size: 18px; margin: 0 0 4px; font-weight: 700; letter-spacing: .3px; }
+    h1 span { color: #7aa2f7; }
+    h2 { font-size: 13px; margin: 26px 0 8px; color: #9aa5ce; text-transform: uppercase; letter-spacing: .6px; }
+    p.lead { color: #565f89; margin: 0 0 8px; }
+    #gpu {
+      margin: 14px 0; padding: 10px 12px; border-radius: 8px;
+      border: 1px solid #24283b; background: #16172099;
+    }
+    #gpu b { color: #c0caf5; }
+    #gpu .sw { color: #e0af68; }
+    #gpu .hw { color: #9ece6a; }
+    table { border-collapse: collapse; width: 100%; margin: 2px 0 6px; }
+    th, td {
+      text-align: right; padding: 5px 12px; border-bottom: 1px solid #1f2335;
+      font-variant-numeric: tabular-nums;
+    }
+    th { color: #7aa2f7; font-weight: 600; border-bottom-color: #2f334d; }
+    th:first-child, td:first-child { text-align: left; }
+    td.num { color: #9ece6a; }
+    td.dim { color: #565f89; }
+    .status { color: #e0af68; margin: 12px 0; }
+    .controls { display: flex; gap: 10px; align-items: center; margin: 14px 0; }
+    button {
+      background: #1f2335; color: #c0caf5; border: 1px solid #2f334d;
+      border-radius: 6px; padding: 6px 14px; font: inherit; cursor: pointer;
+    }
+    button:hover { background: #2a2f45; }
+    button:disabled { opacity: .5; cursor: default; }
+    #term { position: absolute; left: -10000px; top: 0; width: 900px; height: 500px; }
+    details { margin-top: 22px; }
+    summary { cursor: pointer; color: #7aa2f7; }
+    pre {
+      margin: 8px 0 0; padding: 12px; border-radius: 8px; overflow: auto;
+      background: #0e0f17; border: 1px solid #1f2335; color: #9aa5ce;
+      font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    a { color: #7aa2f7; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ferro<span>term</span> renderer benchmark</h1>
+    <p class="lead">
+      Isolated render-compute timings for the Canvas2D and instanced WebGL
+      renderers, plus the per-frame pipeline breakdown. All numbers are best-of-N
+      over an already-parsed full-screen frame, so nothing here is limited by
+      vsync / requestAnimationFrame.
+    </p>
+
+    <div id="gpu">detecting GPU…</div>
+
+    <div class="controls">
+      <button id="run" disabled>Run benchmark</button>
+      <span class="status" id="status"></span>
+    </div>
+
+    <div id="out"></div>
+
+    <details>
+      <summary>Copyable results (JSON)</summary>
+      <pre id="json">run the benchmark to populate</pre>
+    </details>
+  </main>
+
+  <div id="term"></div>
+
+  <script type="module">
+    import { Ferroterm } from '../web/src/index.js';
+    import {
+      gpuInfo, measureRenderers, measurePipeline, measureIncremental,
+    } from '../web/src/bench.js';
+
+    const $ = (id) => document.getElementById(id);
+
+    // GPU banner — reveals whether we're on real silicon or a software fallback.
+    const gpu = gpuInfo();
+    if (!gpu) {
+      $('gpu').innerHTML = '<b>WebGL unavailable</b> — only the Canvas2D renderer can be measured.';
+    } else {
+      const tag = gpu.software
+        ? '<span class="sw">software rasterizer</span>'
+        : '<span class="hw">hardware GPU</span>';
+      $('gpu').innerHTML =
+        `GPU: <b>${esc(gpu.renderer)}</b> &nbsp;·&nbsp; ${tag}` +
+        (gpu.software
+          ? '<br><span class="sw">Note: SwiftShader/llvmpipe run on the CPU. WebGL will look ' +
+            'far slower here than on real hardware; treat these as a lower bound.</span>'
+          : '');
+    }
+
+    const term = await Ferroterm.create($('term'), {
+      renderer: 'webgl', fontSize: 14, cols: 100, rows: 32,
+    });
+    window.__bench = { term, gpu };
+
+    const btn = $('run');
+    btn.disabled = false;
+    btn.addEventListener('click', run);
+
+    async function run() {
+      btn.disabled = true;
+      $('status').textContent = 'measuring… (a few seconds)';
+      $('out').innerHTML = '';
+      // Yield so the disabled state / status paint before the blocking loops.
+      await new Promise((r) => setTimeout(r, 30));
+
+      const paint = await measureRenderers(term);
+      const pipeline = {};
+      for (const kind of ['canvas', 'webgl']) {
+        term.setRenderer(kind);
+        await new Promise((r) => requestAnimationFrame(r));
+        pipeline[kind] = measurePipeline(term);
+      }
+      term.setRenderer('webgl');
+      await new Promise((r) => requestAnimationFrame(r));
+      const incremental = measureIncremental(term);
+
+      const results = {
+        gpu, cols: term.cols, rows: term.rows,
+        paint, pipeline, incremental,
+      };
+      window.__bench.results = results;
+      window.__benchDone = true;
+
+      renderTables(results);
+      $('json').textContent = JSON.stringify(results, null, 2);
+      $('status').textContent = 'done';
+      btn.disabled = false;
+    }
+
+    function renderTables(r) {
+      const out = $('out');
+      const ms = (x) => x.toFixed(3);
+      const fps = (x) => (1000 / x).toFixed(0);
+
+      // Renderer paint.
+      let h = '<h2>renderer paint — full ' + r.cols + '×' + r.rows +
+        ' redraw (render() only)</h2>';
+      h += table(['renderer', 'render time', 'fps'],
+        r.paint.map((p) => [p.kind, td(ms(p.best) + ' ms'), td(fps(p.best) + ' fps')]));
+
+      // Pipeline breakdown, per renderer.
+      for (const kind of ['canvas', 'webgl']) {
+        const p = r.pipeline[kind];
+        if (!p) continue;
+        const pct = (x) => ((x / p.frame) * 100).toFixed(0) + '%';
+        h += '<h2>per-frame pipeline — ' + p.kind + '</h2>';
+        h += table(['stage', 'time', 'share', ''], [
+          ['snapshot (wasm)', td(ms(p.snap) + ' ms'), pct(p.snap), dim('zero-copy view')],
+          ['applySnapshot (JS)', td(ms(p.apply) + ' ms'), pct(p.apply), dim('de-interleave')],
+          ['render (' + p.kind + ')', td(ms(p.render) + ' ms'), pct(p.render), dim('paint')],
+          ['<b>full frame</b>', td('<b>' + ms(p.frame) + ' ms</b>'), td('<b>' + fps(p.frame) + ' fps</b>'), ''],
+        ]);
+      }
+
+      // Incremental WebGL.
+      if (r.incremental) {
+        const i = r.incremental;
+        const speedup = (x) => (i.full / x).toFixed(0) + '×';
+        h += '<h2>incremental WebGL — cost by dirty region</h2>';
+        h += table(['frame kind', 'render time', 'vs full'], [
+          ['full repaint', td(ms(i.full) + ' ms'), dim('1×')],
+          ['one dirty row (typing)', td(ms(i.oneRow) + ' ms'), td(speedup(i.oneRow))],
+          ['no grid change (cursor blink)', td(ms(i.cursorOnly) + ' ms'), td(speedup(i.cursorOnly))],
+        ]);
+      }
+
+      out.innerHTML = h;
+    }
+
+    const td = (s) => '<span class="num">' + s + '</span>';
+    const dim = (s) => '<span class="dim">' + s + '</span>';
+    function table(head, rows) {
+      let h = '<table><thead><tr>';
+      for (const c of head) h += '<th>' + c + '</th>';
+      h += '</tr></thead><tbody>';
+      for (const row of rows) {
+        h += '<tr>';
+        row.forEach((cell, i) => {
+          const cls = i === 0 ? '' : ' class="num"';
+          h += (i === 0 ? '<td>' : '<td' + cls + '>') + cell + '</td>';
+        });
+        h += '</tr>';
+      }
+      return h + '</tbody></table>';
+    }
+    function esc(s) {
+      return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    }
+
+    // Auto-run for headless verification: ?auto
+    if (new URLSearchParams(location.search).has('auto')) run();
+    window.__benchReady = true;
+  </script>
+</body>
+</html>
