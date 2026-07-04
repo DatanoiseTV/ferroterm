@@ -1,0 +1,10 @@
+{
+  "name": "ferroterm-bench",
+  "private": true,
+  "type": "module",
+  "description": "Head-to-head benchmark harness: ferroterm vs xterm.js.",
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-webgl": "^0.18.0"
+  }
+}

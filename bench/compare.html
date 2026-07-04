@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ferroterm vs xterm.js — benchmark</title>
+  <link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css" />
+  <style>
+    body { margin: 0; background: #14151f; color: #c0caf5; font: 13px monospace; }
+    .rig { position: absolute; width: 800px; height: 384px; left: -3000px; } /* offscreen */
+    #out { padding: 16px; white-space: pre; }
+  </style>
+</head>
+<body>
+  <div id="xterm-host" class="rig"></div>
+  <div id="ferro-host" class="rig"></div>
+  <div id="out">loading…</div>
+
+  <!-- xterm.js UMD (exposes window.Terminal, window.WebglAddon) -->
+  <script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="./node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
+
+  <script type="module">
+    import { Ferroterm } from '../web/src/index.js';
+
+    const COLS = 80, ROWS = 24, SCROLLBACK = 5000;
+    const enc = new TextEncoder();
+    const WORDS = ['ferroterm','wasm','rust','render','parser','vt100','grid','scroll','buffer','atlas'];
+    function rng(seed){let s=seed>>>0;return()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return (s>>>0)/0xffffffff;};}
+    function genPlain(t){const r=rng(1);let o='';while(o.length<t){let l='';for(let i=0;i<12;i++)l+=WORDS[(r()*WORDS.length)|0]+' ';o+=l+'\r\n';}return o;}
+    function genSgr(t){const r=rng(2);let o='';while(o.length<t){let l='';for(let i=0;i<10;i++)l+=`\x1b[38;5;${(r()*256)|0}m`+WORDS[(r()*WORDS.length)|0]+' ';o+=l+'\x1b[0m\r\n';}return o;}
+    function genTrue(t){const r=rng(3);let o='';while(o.length<t){let l='';for(let i=0;i<8;i++)l+=`\x1b[38;2;${(r()*256)|0};${(r()*256)|0};${(r()*256)|0}m`+WORDS[(r()*WORDS.length)|0]+' ';o+=l+'\x1b[0m\r\n';}return o;}
+    function genScroll(t){const r=rng(5);let o='';while(o.length<t){let l='';while(l.length<80)l+=WORDS[(r()*WORDS.length)|0]+' ';o+=l.slice(0,80)+'\r\n';}return o;}
+
+    const MB = 4;
+    const payloads = {
+      'plain text':      enc.encode(genPlain(MB*1024*1024)),
+      '256-color (SGR)': enc.encode(genSgr(MB*1024*1024)),
+      'true color':      enc.encode(genTrue(MB*1024*1024)),
+      'scroll':          enc.encode(genScroll(MB*1024*1024)),
+    };
+
+    // --- set up xterm.js ---
+    const xterm = new window.Terminal({ cols: COLS, rows: ROWS, scrollback: SCROLLBACK });
+    xterm.open(document.getElementById('xterm-host'));
+    let xtermRenderer = 'dom';
+    try { xterm.loadAddon(new window.WebglAddon()); xtermRenderer = 'webgl'; } catch (e) {}
+
+    // --- set up ferroterm ---
+    await Ferroterm.ready();
+    const ferro = new Ferroterm({ cols: COLS, rows: ROWS, scrollback: SCROLLBACK, renderer: 'webgl', cursorBlink: false });
+    ferro.attachView(document.getElementById('ferro-host'));
+    ferro.resize(COLS, ROWS);
+    const ferroRenderer = ferro.rendererName;
+
+    const median = (a) => a.slice().sort((x,y)=>x-y)[a.length>>1];
+
+    // xterm.write is async; the callback fires when the write buffer drains.
+    function xtermWrite(bytes){ return new Promise((res)=>xterm.write(bytes, res)); }
+
+    async function benchXterm(bytes){
+      const runs = [];
+      for (let i=0;i<4;i++){
+        xterm.reset();
+        const t0 = performance.now();
+        await xtermWrite(bytes);
+        runs.push(performance.now()-t0);
+      }
+      const ms = median(runs);
+      return { ms, mbps: (bytes.length/1e6)/(ms/1000) };
+    }
+    function benchFerro(bytes){
+      const runs = [];
+      for (let i=0;i<4;i++){
+        ferro.write('\x1b\x63'); // RIS reset
+        const t0 = performance.now();
+        ferro.write(bytes); // synchronous parse
+        runs.push(performance.now()-t0);
+      }
+      const ms = median(runs);
+      return { ms, mbps: (bytes.length/1e6)/(ms/1000) };
+    }
+
+    const results = { meta: { cols: COLS, rows: ROWS, mb: MB, xtermRenderer, ferroRenderer,
+      xtermVersion: window.Terminal.strings ? '5.x' : '5.x' }, rows: [] };
+
+    for (const [name, bytes] of Object.entries(payloads)){
+      const x = await benchXterm(bytes);
+      const f = benchFerro(bytes);
+      results.rows.push({ name, mb: bytes.length/1e6, xterm: x, ferro: f, speedup: f.mbps / x.mbps });
+    }
+
+    window.__results = results;
+    document.getElementById('out').textContent = JSON.stringify(results, null, 2);
+    window.__done = true;
+  </script>
+</body>
+</html>

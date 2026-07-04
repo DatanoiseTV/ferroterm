@@ -155,6 +155,12 @@ The parser has an ASCII fast-path that fills line spans in bulk; plain-text
 throughput is higher still. WASM runs a bit slower than native but in the same
 ballpark.
 
+**Head-to-head vs. xterm.js** (same browser, identical payloads — see
+[COMPARISON.md](COMPARISON.md) for methodology): ferroterm parses **1.4×–4.4×
+faster** and ships in **41 KB gzip** (both renderers) vs xterm.js's 68–95 KB.
+xterm.js remains more mature (grapheme clusters, addon ecosystem); the doc is
+honest about the trade-offs.
+
 The browser `loadtest` command measures end-to-end (parse + render) MB/s and
 prints it the way the xterm.js demo does.
 
