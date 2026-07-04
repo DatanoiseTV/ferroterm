@@ -41,5 +41,33 @@ body { display: flex; flex-direction: column; }
 #hud-battery.low b { color: #f7768e; }
 
 #stack { flex: 1; position: relative; }
-.term-pane { position: absolute; inset: 0; padding: 6px; display: none; }
-.term-pane.active { display: block; }
+.tab-view { position: absolute; inset: 0; display: none; }
+.tab-view.active { display: flex; }
+
+.split { flex: 1; display: flex; min-width: 0; min-height: 0; }
+.split-row { flex-direction: row; }
+.split-col { flex-direction: column; }
+.pane { position: relative; overflow: hidden; flex: 1; min-width: 40px; min-height: 40px; }
+.split .pane.focused { outline: 1.5px solid #3d59a1; outline-offset: -2px; border-radius: 3px; }
+
+.divider { flex: 0 0 auto; background: #0e0f17; }
+.divider:hover { background: #3d59a1; }
+.divider-v { width: 6px; cursor: col-resize; }
+.divider-h { height: 6px; cursor: row-resize; }
+
+.find-bar {
+  position: fixed; top: 44px; right: 16px; z-index: 500;
+  display: flex; align-items: center; gap: 6px;
+  background: #1f2335; border: 1px solid #2f334d; border-radius: 8px;
+  padding: 5px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+.find-bar input {
+  background: #14151f; color: #c0caf5; border: 1px solid #2f334d;
+  border-radius: 5px; padding: 4px 8px; font: inherit; width: 180px; outline: none;
+}
+.find-bar .count { color: #9aa5ce; font-variant-numeric: tabular-nums; min-width: 34px; }
+.find-bar button {
+  background: #2a2f45; color: #c0caf5; border: 0; border-radius: 5px;
+  padding: 4px 8px; cursor: pointer; line-height: 1;
+}
+.find-bar button:hover { background: #3b3f5c; }

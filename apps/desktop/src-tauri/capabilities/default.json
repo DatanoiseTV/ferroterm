@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the main Ferroterm window: event listen/emit for PTY streaming, plus the custom pty/battery commands.",
-  "windows": ["main"],
+  "description": "Capabilities for all Ferroterm windows: event listen/emit for PTY streaming, window creation for multi-window, plus the custom pty/battery commands.",
+  "windows": ["*"],
   "permissions": [
     "core:default",
     "core:event:default",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-create",
+    "core:webview:allow-create-webview-window"
   ]
 }

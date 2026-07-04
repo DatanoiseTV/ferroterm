@@ -263,6 +263,46 @@ export class Ferroterm {
     this.write('\x1b[2J\x1b[3J\x1b[H');
   }
 
+  // --- search over scrollback + screen ------------------------------------
+
+  totalLines() {
+    return this.term.totalLines();
+  }
+  lineText(abs) {
+    return this.term.lineText(abs);
+  }
+  scrollToLine(abs) {
+    this.term.scrollToLine(abs);
+    this._forceNext = true;
+    if (this.attached) this._scheduleRender();
+  }
+  scrollToBottom() {
+    this.term.scrollToBottom();
+    this._forceNext = true;
+    if (this.attached) this._scheduleRender();
+  }
+
+  /**
+   * Find `query` (case-insensitive) in the buffer. Returns an array of
+   * `{ line, col }` matches (line = absolute logical line index).
+   */
+  findAll(query) {
+    if (!query) return [];
+    const q = query.toLowerCase();
+    const total = this.totalLines();
+    const out = [];
+    for (let i = 0; i < total; i++) {
+      const text = this.lineText(i).toLowerCase();
+      let from = 0;
+      let idx;
+      while ((idx = text.indexOf(q, from)) !== -1) {
+        out.push({ line: i, col: idx });
+        from = idx + Math.max(1, q.length);
+      }
+    }
+    return out;
+  }
+
   getSelection() {
     return this._selection ? this._selectionText(this._selection) : '';
   }

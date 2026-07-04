@@ -26,6 +26,8 @@ export interface FerrotermOptions {
   autoFit?: boolean;
   /** Copy to clipboard as soon as a selection is made. */
   copyOnSelect?: boolean;
+  /** Right-click behavior: context menu, paste, or ignore (default 'menu'). */
+  rightClick?: 'menu' | 'paste' | 'none';
   /** Override link-click behavior instead of `window.open`. */
   onLink?: (uri: string, event: MouseEvent) => void;
   /** Override the WASM module URL (defaults to the packaged location). */
@@ -34,41 +36,64 @@ export interface FerrotermOptions {
 
 export type Unsubscribe = () => void;
 
+export interface Match {
+  /** Absolute logical line index (scrollback + screen). */
+  line: number;
+  col: number;
+}
+
 export const DEFAULT_THEME: Required<Theme>;
 
 /** Initialize the WASM module (called automatically by `Ferroterm.create`). */
 export function initWasm(wasmUrl?: string | URL): Promise<unknown>;
 
 export class Ferroterm {
+  /** Preload WASM. Call before `new Ferroterm(...)`. */
+  static ready(wasmUrl?: string | URL): Promise<unknown>;
+  /** Init WASM, construct the engine, and attach a view to `container`. */
   static create(container: HTMLElement, options?: FerrotermOptions): Promise<Ferroterm>;
-  constructor(container: HTMLElement, options?: FerrotermOptions);
+  /** Construct the engine only (no view). Requires WASM to be ready. */
+  constructor(options?: FerrotermOptions);
 
   /** Feed bytes or a string from the host / PTY into the terminal. */
   write(data: Uint8Array | string): void;
 
-  /** Subscribe to user-generated output that should be sent to the PTY. */
   onData(cb: (bytes: Uint8Array) => void): Unsubscribe;
   onTitleChange(cb: (title: string) => void): Unsubscribe;
   onBell(cb: () => void): Unsubscribe;
   onResize(cb: (cols: number, rows: number) => void): Unsubscribe;
 
   resize(cols: number, rows: number): void;
-  /** Resize to fill the container. */
   fit(): void;
   focus(): void;
   blur(): void;
 
-  /** Switch renderer backend at runtime. */
+  /** Attach a renderer + input capture inside `container` and start drawing. */
+  attachView(container: HTMLElement): void;
+  /** Free the renderer/WebGL context + input, keeping all engine state. */
+  detachView(): void;
+  readonly attached: boolean;
+
   setRenderer(kind: 'webgl' | 'canvas'): void;
   readonly rendererName: string | null;
-
   setTheme(theme: Theme): void;
+  setFontSize(px: number): void;
+  clear(): void;
 
   getSelection(): string;
+  selectAll(): void;
   clearSelection(): void;
+
+  /** Search scrollback + screen (case-insensitive). */
+  findAll(query: string): Match[];
+  totalLines(): number;
+  lineText(abs: number): string;
+  scrollToLine(abs: number): void;
+  scrollToBottom(): void;
 
   dispose(): void;
 
+  readonly title: string;
   readonly cols: number;
   readonly rows: number;
 }
