@@ -13,9 +13,9 @@ and captures input.
 
 ```
 ┌─────────────┐   bytes    ┌──────────────────────────┐  Uint32Array   ┌───────────────┐
-│  PTY / host │ ─────────▶ │  ferroterm-core (Rust →   │  snapshot ───▶ │  renderer     │
-│  (or socket)│ ◀───────── │  WASM): parser + grid +   │ ◀── input ──   │  Canvas2D /   │
-└─────────────┘  replies   │  scrollback + state       │   encoding     │  WebGL        │
+│  PTY / host │ ─────────▶ │  ferroterm-core (Rust →  │  snapshot ───▶ │  renderer     │
+│  (or socket)│ ◀───────── │  WASM): parser + grid +  │ ◀── input ──   │  Canvas2D /   │
+└─────────────┘  replies   │  scrollback + state      │   encoding     │  WebGL        │
                            └──────────────────────────┘                └───────────────┘
 ```
 
