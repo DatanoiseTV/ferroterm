@@ -188,7 +188,9 @@ panic/hang" case.
   6 words per cell — `[codepoint, fg, bg, flags, link, grapheme]`) that the JS
   model decodes once. Only dirty rows are emitted.
 - **Deferred wrap.** Printing into the last column sets a pending-wrap flag rather
-  than wrapping immediately, matching real DEC terminals.
+  than wrapping immediately, matching real DEC terminals. Auto-wrapped rows carry
+  a `wrapped` flag so resize can rejoin and re-split them (reflow) without
+  merging hard line breaks.
 - **Bounded input.** Parameter counts, intermediates and OSC payloads are capped
   so hostile sequences can't exhaust memory; every parser loop advances.
 - **Safety at the boundary.** All untrusted bytes are parsed in memory-safe Rust;
@@ -196,10 +198,13 @@ panic/hang" case.
 
 ## Known limitations (honestly)
 
-- **No reflow on resize.** Resizing truncates/pads lines rather than rewrapping
-  wrapped content. Scrollback is preserved but not rewrapped.
 - **DCS / Sixel / iTerm images** are recognized and consumed but not rendered.
 - **Palette OSC (4/10/11) and some rare modes** are parsed but not applied.
+- **Reflow** rewraps the primary screen + scrollback on resize, keeping the
+  cursor on its character. The alternate screen is intentionally *not* reflowed
+  (full-screen apps repaint on `SIGWINCH`), and a cursor parked mid-screen on the
+  primary buffer with blank space below may move up when content exceeds the new
+  height.
 
 These are deliberate scope choices, not accidental gaps.
 

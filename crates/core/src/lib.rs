@@ -22,6 +22,7 @@ mod cell;
 mod grid;
 mod keys;
 mod parser;
+mod reflow;
 mod terminal;
 mod width;
 

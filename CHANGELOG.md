@@ -14,6 +14,13 @@ All notable changes to this project are documented here. The format is based on
   `Terminal::grapheme(id)`; snapshots carry a per-cell grapheme id (cell is now
   6 words), and both renderers draw the full cluster (WebGL keys its atlas by
   the cluster string). Removes the first item from the "known limitations" list.
+- **Reflow (rewrap) on resize.** The primary screen and its scrollback are now
+  treated as one continuous stream of logical lines and re-split at the new
+  width, so auto-wrapped text stays intact when the terminal is resized instead
+  of being truncated or padded. Hard line breaks are preserved (rows carry a
+  `wrapped` flag set only on auto-wrap), wide glyphs are never split across the
+  boundary, the cursor is tracked onto the same character, and overflow moves
+  between screen and scrollback. The alternate screen is not reflowed.
 
 ## [0.2.0] - 2026-07-04
 

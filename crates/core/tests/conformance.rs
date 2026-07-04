@@ -347,3 +347,124 @@ fn snapshot_carries_grapheme_id() {
     assert_ne!(grapheme_id, 0);
     assert_eq!(t.grapheme(grapheme_id), Some("e\u{0301}"));
 }
+
+// --- reflow (rewrap) on resize ------------------------------------------
+
+fn wide_term(cols: usize, rows: usize, sb: usize) -> Terminal {
+    Terminal::new(cols, rows, sb)
+}
+
+#[test]
+fn narrowing_rewraps_wrapped_line() {
+    // 10 cols: print 15 chars -> auto-wraps to 2 rows ("0123456789","01234").
+    let mut t = wide_term(10, 4, 100);
+    t.feed(b"012345678901234");
+    assert_eq!(&row_text(&t, 0)[..10], "0123456789");
+    // Narrow to 5 cols: the 15-char logical line rewraps to 3 rows of 5.
+    t.resize(5, 4);
+    assert_eq!(&row_text(&t, 0)[..5], "01234");
+    assert_eq!(&row_text(&t, 1)[..5], "56789");
+    assert_eq!(&row_text(&t, 2)[..5], "01234");
+}
+
+#[test]
+fn widening_rejoins_wrapped_line() {
+    // Wrap at 5, then widen to 15: the two physical rows rejoin into one.
+    let mut t = wide_term(5, 4, 100);
+    t.feed(b"012345678901234"); // 15 chars -> 3 rows of 5
+    t.resize(15, 4);
+    assert_eq!(&row_text(&t, 0)[..15], "012345678901234");
+}
+
+#[test]
+fn hard_newlines_are_preserved_across_reflow() {
+    // Two separate hard lines must not be joined even after resize.
+    let mut t = wide_term(10, 4, 100);
+    t.feed(b"hello\r\nworld");
+    t.resize(3, 4); // "hello" -> "hel","lo"; "world" -> "wor","ld"
+    // The proof that the hard break survived: widening back keeps them on two
+    // separate physical rows, i.e. they were never joined into one wrapped line.
+    t.resize(20, 4);
+    assert_eq!(row_text(&t, 0).trim_end(), "hello");
+    assert_eq!(row_text(&t, 1).trim_end(), "world");
+}
+
+#[test]
+fn cursor_follows_reflow() {
+    // Cursor sits after "0123456789012" (col 3 of row 1 at width 10). After
+    // narrowing to 5, it must still be on the character just typed.
+    let mut t = wide_term(10, 4, 100);
+    t.feed(b"0123456789012"); // 13 chars: row0 full, row1 = "012", cursor at (3,1)
+    assert_eq!(t.cursor(), (3, 1));
+    t.resize(5, 4);
+    // 13 chars at width 5: rows "01234","56789","012"; cursor after "012" -> (3,2)
+    assert_eq!(t.cell_char(0, 2), '0');
+    assert_eq!(t.cursor(), (3, 2));
+}
+
+#[test]
+fn reflow_pushes_overflow_into_scrollback() {
+    // Fill more logical content than fits after narrowing; the top must land in
+    // scrollback, not be lost.
+    let mut t = wide_term(10, 3, 100);
+    for i in 0..3 {
+        t.feed(format!("line{}______\r\n", i).as_bytes()); // each 12 chars -> wraps
+    }
+    let before = t.total_lines();
+    t.resize(4, 3);
+    // Content is preserved: total logical lines only grew (more wrapping), and
+    // the oldest content lands in scrollback rather than being lost.
+    assert!(t.total_lines() >= before);
+    // "line0______" rewrapped at width 4 begins with "line".
+    assert!(t.line_text(0).starts_with("line"));
+    // Reassembling the full history recovers the original first line intact.
+    let history: String = (0..t.total_lines()).map(|a| t.line_text(a)).collect();
+    assert!(history.contains("line0______"));
+    assert!(history.contains("line2______"));
+}
+
+#[test]
+fn reflow_keeps_wide_glyph_intact() {
+    // A wide (CJK) glyph must never be split across the wrap boundary.
+    let mut t = wide_term(6, 3, 100);
+    t.feed("AB世界CD".as_bytes()); // widths: A B 世(2) 界(2) C D = 8 cols
+    t.resize(3, 3);
+    // At width 3, "世" (wide) can't share a row with "AB" (would be col2+3),
+    // so it moves to the next row. No half-glyph: every wide cell has a spacer.
+    for y in 0..3 {
+        let line = t.active_line(y);
+        for x in 0..line.len() {
+            if line[x].pen.has(attr::WIDE) {
+                assert!(x + 1 < line.len() && line[x + 1].pen.has(attr::WIDE_SPACER),
+                    "wide glyph at ({},{}) lost its spacer", x, y);
+            }
+        }
+    }
+    // The characters survive in order (ignoring the blank right-half spacers,
+    // which render as spaces): widening back reassembles the original line.
+    t.resize(8, 3);
+    // line_text skips the blank right-half spacer cells, so the logical content
+    // reads back exactly.
+    assert_eq!(t.line_text(0), "AB世界CD");
+}
+
+#[test]
+fn resize_no_op_when_unchanged() {
+    let mut t = wide_term(10, 4, 100);
+    t.feed(b"hello");
+    t.resize(10, 4); // same dims: must be a no-op, content intact
+    assert_eq!(&row_text(&t, 0)[..5], "hello");
+    assert_eq!(t.cursor(), (5, 0));
+}
+
+#[test]
+fn reflow_survives_double_resize_roundtrip() {
+    let mut t = wide_term(20, 5, 200);
+    t.feed(b"the quick brown fox jumps over the lazy dog and then some more text");
+    t.resize(7, 5);
+    t.resize(20, 5);
+    // After narrow-then-widen the text is intact on the first logical line span.
+    let joined: String = (0..5).map(|y| row_text(&t, y)).collect::<Vec<_>>().join("");
+    assert!(joined.contains("the quick brown fox"));
+    assert!(joined.contains("lazy dog"));
+}

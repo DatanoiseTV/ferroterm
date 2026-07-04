@@ -8,7 +8,53 @@
 
 use crate::cell::{Cell, Pen};
 
-pub type Line = Vec<Cell>;
+/// A physical row of cells plus a `wrapped` flag: `wrapped == true` means the
+/// row was produced by an auto-wrap and its content logically continues on the
+/// next physical row. Reflow-on-resize uses this to rejoin and re-split lines.
+///
+/// `Deref`s to its `Vec<Cell>` so `line[x]`, `line.iter()`, `line.len()`,
+/// `line.resize(..)` etc. all work as before the flag existed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    cells: Vec<Cell>,
+    pub wrapped: bool,
+}
+
+impl Line {
+    /// A row of `cols` default (theme-default) blank cells.
+    pub fn blank(cols: usize) -> Self {
+        Line {
+            cells: vec![Cell::default(); cols],
+            wrapped: false,
+        }
+    }
+
+    /// A row of `cols` blanks that keep `pen`'s background (erase semantics).
+    pub fn filled(cols: usize, pen: Pen) -> Self {
+        Line {
+            cells: vec![Cell::blank(pen); cols],
+            wrapped: false,
+        }
+    }
+
+    /// Wrap an existing cell vector (used by reflow).
+    pub fn from_cells(cells: Vec<Cell>, wrapped: bool) -> Self {
+        Line { cells, wrapped }
+    }
+}
+
+impl std::ops::Deref for Line {
+    type Target = Vec<Cell>;
+    fn deref(&self) -> &Vec<Cell> {
+        &self.cells
+    }
+}
+
+impl std::ops::DerefMut for Line {
+    fn deref_mut(&mut self) -> &mut Vec<Cell> {
+        &mut self.cells
+    }
+}
 
 /// Cursor position and the pending-wrap flag (deferred auto-wrap at the last
 /// column, per DEC/VT behavior).
@@ -50,7 +96,7 @@ impl Buffer {
         Buffer {
             cols,
             rows,
-            lines: vec![vec![Cell::default(); cols]; rows],
+            lines: vec![Line::blank(cols); rows],
             cursor: Cursor::default(),
             saved: SavedCursor::default(),
             scroll_top: 0,
@@ -86,6 +132,18 @@ impl Buffer {
         if y < self.rows {
             self.dirty[y] = true;
         }
+    }
+
+    /// Mark row `y` as auto-wrapped (its content continues on row `y+1`).
+    pub fn mark_wrapped(&mut self, y: usize) {
+        if y < self.rows {
+            self.lines[y].wrapped = true;
+        }
+    }
+
+    #[inline]
+    pub fn is_wrapped(&self, y: usize) -> bool {
+        self.lines[y].wrapped
     }
 
     pub fn mark_all_dirty(&mut self) {
@@ -134,7 +192,7 @@ impl Buffer {
         }
         if rows > self.rows {
             for _ in self.rows..rows {
-                self.lines.push(vec![Cell::default(); cols]);
+                self.lines.push(Line::blank(cols));
             }
         } else {
             self.lines.truncate(rows);
@@ -147,6 +205,31 @@ impl Buffer {
         self.scroll_bottom = rows - 1;
         self.cursor.x = self.cursor.x.min(cols - 1);
         self.cursor.y = self.cursor.y.min(rows - 1);
+        self.cursor.pending_wrap = false;
+    }
+
+    /// Replace the entire visible grid with `lines` (exactly `rows` rows, each
+    /// padded/truncated to `cols`), reset the scroll region and dirty state, and
+    /// place the cursor. Used by reflow-on-resize to install the rewrapped
+    /// screen. `saved` is preserved by the caller if needed.
+    pub fn set_grid(&mut self, cols: usize, rows: usize, mut lines: Vec<Line>, cx: usize, cy: usize) {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        lines.truncate(rows);
+        for l in &mut lines {
+            l.resize(cols, Cell::default());
+        }
+        while lines.len() < rows {
+            lines.push(Line::blank(cols));
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.lines = lines;
+        self.dirty = vec![true; rows];
+        self.scroll_top = 0;
+        self.scroll_bottom = rows - 1;
+        self.cursor.x = cx.min(cols - 1);
+        self.cursor.y = cy.min(rows - 1);
         self.cursor.pending_wrap = false;
     }
 
@@ -197,7 +280,7 @@ impl Buffer {
     }
 
     fn blank_line(&self, pen: Pen) -> Line {
-        vec![Cell::blank(pen); self.cols]
+        Line::filled(self.cols, pen)
     }
 
     // --- line editing -------------------------------------------------------
@@ -289,6 +372,8 @@ impl Buffer {
         for i in x..self.cols {
             self.lines[y][i] = Cell::blank(pen);
         }
+        // Content is cut here, so the row no longer continues onto the next.
+        self.lines[y].wrapped = false;
         self.dirty[y] = true;
     }
 
@@ -306,6 +391,7 @@ impl Buffer {
         for i in 0..self.cols {
             self.lines[y][i] = Cell::blank(pen);
         }
+        self.lines[y].wrapped = false;
         self.dirty[y] = true;
     }
 
@@ -315,6 +401,7 @@ impl Buffer {
             for i in 0..self.cols {
                 self.lines[y][i] = Cell::blank(pen);
             }
+            self.lines[y].wrapped = false;
             self.dirty[y] = true;
         }
     }
@@ -324,6 +411,7 @@ impl Buffer {
             for i in 0..self.cols {
                 self.lines[y][i] = Cell::blank(pen);
             }
+            self.lines[y].wrapped = false;
             self.dirty[y] = true;
         }
         self.erase_line_to_left(pen);
@@ -334,6 +422,7 @@ impl Buffer {
             for i in 0..self.cols {
                 self.lines[y][i] = Cell::blank(pen);
             }
+            self.lines[y].wrapped = false;
             self.dirty[y] = true;
         }
     }

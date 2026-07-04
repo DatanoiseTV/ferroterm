@@ -257,10 +257,75 @@ impl Terminal {
     // --- resize -------------------------------------------------------------
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.primary.resize(cols, rows);
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        if cols == self.cols() && rows == self.rows() {
+            return;
+        }
+        // The alternate screen is not reflowed: full-screen apps that use it
+        // (editors, pagers) repaint themselves on SIGWINCH, and rewrapping their
+        // absolutely-positioned layout would corrupt it. It just resizes.
         self.alt.resize(cols, rows);
+        // The primary screen and its scrollback are one continuous stream of
+        // logical lines; rewrap them so wrapped text stays intact.
+        self.reflow_primary(cols, rows);
         self.display_offset = 0;
         self.viewport_full = true;
+    }
+
+    /// Rewrap the primary buffer + scrollback to `new_cols`/`new_rows`, moving
+    /// lines between the screen and scrollback as the geometry changes and
+    /// keeping the cursor on the same character. See [`crate::reflow`].
+    fn reflow_primary(&mut self, new_cols: usize, new_rows: usize) {
+        let old_rows = self.primary.rows;
+        let cursor = self.primary.cursor;
+
+        // Last row with real content (non-default cell or a soft-wrap flag);
+        // trailing blank screen rows below this and the cursor are regenerated
+        // rather than pushed through the stream.
+        let mut last_content = 0;
+        for y in 0..old_rows {
+            let line = self.primary.line(y);
+            if line.wrapped || line.iter().any(|c| *c != Cell::default()) {
+                last_content = y;
+            }
+        }
+        let content_bottom = cursor.y.min(old_rows - 1).max(last_content);
+
+        // Build the physical stream: scrollback (drained) then screen rows.
+        let mut phys: Vec<Line> = Vec::with_capacity(self.scrollback.len() + content_bottom + 1);
+        phys.extend(self.scrollback.drain(..));
+        let sb_before = phys.len();
+        for y in 0..=content_bottom {
+            phys.push(self.primary.line(y).clone());
+        }
+        let cursor_row = sb_before + cursor.y.min(content_bottom);
+        let cursor_col = cursor.x;
+
+        let r = crate::reflow::reflow(&phys, cursor_row, cursor_col, new_cols);
+
+        // Split the rewrapped stream into scrollback + the visible screen,
+        // keeping the cursor on screen.
+        let total = r.rows.len();
+        let (sb_rows, grid_rows, cy) = if total <= new_rows {
+            (Vec::new(), r.rows, r.cursor_row.min(new_rows - 1))
+        } else {
+            let split = total - new_rows;
+            let mut rows = r.rows;
+            let grid = rows.split_off(split);
+            let cy = r.cursor_row.saturating_sub(split);
+            (rows, grid, cy)
+        };
+
+        self.scrollback.clear();
+        for l in sb_rows {
+            self.scrollback.push_back(l);
+        }
+        while self.scrollback.len() > self.max_scrollback {
+            self.scrollback.pop_front();
+        }
+        self.primary
+            .set_grid(new_cols, new_rows, grid_rows, r.cursor_col, cy);
     }
 
     // --- internal buffer access --------------------------------------------
@@ -325,6 +390,8 @@ impl Terminal {
 
         if self.buf().cursor.pending_wrap && autowrap {
             self.buf_mut().cursor.pending_wrap = false;
+            let y = self.buf().cursor.y;
+            self.buf_mut().mark_wrapped(y); // the row we're leaving soft-wrapped
             self.carriage_return();
             self.linefeed();
         }
@@ -332,6 +399,8 @@ impl Terminal {
         // A wide glyph that won't fit in the last column wraps first.
         if w == 2 && self.buf().cursor.x == cols - 1 {
             if autowrap {
+                let y = self.buf().cursor.y;
+                self.buf_mut().mark_wrapped(y);
                 self.carriage_return();
                 self.linefeed();
             } else {
@@ -956,6 +1025,8 @@ impl Perform for Terminal {
         while !bytes.is_empty() {
             if self.buf().cursor.pending_wrap && autowrap {
                 self.buf_mut().cursor.pending_wrap = false;
+                let y = self.buf().cursor.y;
+                self.buf_mut().mark_wrapped(y);
                 self.carriage_return();
                 self.linefeed();
             }
