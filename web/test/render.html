@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /></head>
+  <body style="margin: 0; background: #000">
+    <script type="module">
+      // Render regression fixture. Renders a fixed, feature-rich scene in each
+      // renderer, samples specific cells, and reports semantic colour checks
+      // plus a same-renderer determinism diff. The node runner (run.mjs) asserts
+      // on window.__results. See run.mjs for how this is driven.
+      window.addEventListener('error', (e) => {
+        window.__error = (e.error && e.error.stack) || e.message;
+        window.__done = true;
+      });
+      try {
+        const { Ferroterm } = await import('../src/index.js');
+        await Ferroterm.ready();
+
+        // Theme colours the assertions expect (must match DEFAULT_THEME).
+        const THEME = {
+          red: [247, 118, 142], // ansi 1  (#f7768e)
+          green: [158, 206, 106], // ansi 2 (#9ece6a)
+          blue: [122, 162, 247], // ansi 4 (#7aa2f7)
+          fg: [230, 230, 230], // default fg (#e6e6e6)
+          bg: [26, 27, 38], // default bg (#1a1b26)
+        };
+
+        // A scene exercising indexed fg/bg, default, inverse, dim, bold, wide
+        // CJK, true colour, underline and strike.
+        const SCENE = [
+          '\x1b[31mRED\x1b[0m \x1b[44mB\x1b[0m def\r\n',
+          '\x1b[7mI\x1b[0m \x1b[2mD\x1b[0m \x1b[1mBOLD\x1b[0m\r\n',
+          'w\x1b[32m世\x1b[0m \x1b[38;2;255;128;0mO\x1b[0m\r\n',
+          '\x1b[4mU\x1b[0m \x1b[9mS\x1b[0m plain\r\n',
+        ];
+
+        function makeTerm(renderer) {
+          const host = document.createElement('div');
+          document.body.appendChild(host);
+          const t = new Ferroterm({
+            cols: 20, rows: 5, renderer, fontSize: 18, autoFit: false, cursorBlink: false,
+          });
+          t.attachView(host);
+          for (const line of SCENE) t.write(line);
+          for (let i = 0; i < 3; i++) { t._forceNext = true; t._frame(); }
+          return t;
+        }
+
+        // Read the renderer canvas into a 2D scratch so we can sample pixels
+        // (works for both Canvas2D and WebGL).
+        function grab(t) {
+          const rc = t.renderer.element;
+          const s = document.createElement('canvas');
+          s.width = rc.width; s.height = rc.height;
+          const g = s.getContext('2d');
+          g.drawImage(rc, 0, 0);
+          return { g, w: rc.width, h: rc.height, cw: t.metrics.cellW, ch: t.metrics.cellH, dpr: t.metrics.dpr };
+        }
+
+        // Brightest pixel in a cell (captures the glyph ink over a dark bg) and
+        // a near-corner pixel (captures the background fill).
+        function sampleCell(px, col, row) {
+          const x0 = Math.round(col * px.cw * px.dpr);
+          const y0 = Math.round(row * px.ch * px.dpr);
+          const w = Math.round(px.cw * px.dpr);
+          const h = Math.round(px.ch * px.dpr);
+          const d = px.g.getImageData(x0, y0, w, h).data;
+          let br = -1, bright = [0, 0, 0];
+          for (let i = 0; i < d.length; i += 4) {
+            const s = d[i] + d[i + 1] + d[i + 2];
+            if (s > br) { br = s; bright = [d[i], d[i + 1], d[i + 2]]; }
+          }
+          const c = px.g.getImageData(x0 + 1, y0 + 1, 1, 1).data;
+          return { bright, corner: [c[0], c[1], c[2]] };
+        }
+
+        function fullPixels(t) {
+          const rc = t.renderer.element;
+          const s = document.createElement('canvas');
+          s.width = rc.width; s.height = rc.height;
+          const g = s.getContext('2d');
+          g.drawImage(rc, 0, 0);
+          return g.getImageData(0, 0, rc.width, rc.height).data;
+        }
+
+        const results = {};
+        for (const renderer of ['canvas', 'webgl']) {
+          const t = makeTerm(renderer);
+          const px = grab(t);
+          const checks = {
+            redText: sampleCell(px, 0, 0).bright, // 'R' of RED
+            blueBg: sampleCell(px, 4, 0).corner, // 'B' cell has bg blue
+            defaultBg: sampleCell(px, 8, 3).corner, // 'plain' area, default bg
+            inverseBg: sampleCell(px, 0, 1).corner, // inverse -> bg is default fg
+            trueColor: sampleCell(px, 4, 2).bright, // 'O' true-colour orange (世 is wide, cols 1-2)
+            greenWide: sampleCell(px, 1, 2).bright, // wide 世 in green
+          };
+          // Determinism: a second identical render must be byte-identical.
+          const a = fullPixels(t);
+          t._forceNext = true; t._frame();
+          const b = fullPixels(t);
+          let detMax = 0;
+          for (let i = 0; i < a.length; i++) detMax = Math.max(detMax, Math.abs(a[i] - b[i]));
+          results[renderer] = { name: t.rendererName, checks, determinismMaxDiff: detMax };
+          t.detachView();
+        }
+
+        window.__results = { theme: THEME, results };
+        window.__done = true;
+      } catch (e) {
+        window.__error = (e && e.stack) || String(e);
+        window.__done = true;
+      }
+    </script>
+  </body>
+</html>
