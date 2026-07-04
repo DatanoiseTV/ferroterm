@@ -70,13 +70,110 @@ export class CanvasRenderer {
   }
 
   _drawRow(model, y, selection, hoverLink) {
-    const { cellW } = this.metrics;
-    // Clear the whole row background first, then draw cell backgrounds so
-    // consecutive same-color cells can be batched.
-    for (let x = 0; x < model.cols; x++) {
-      this._drawCell(model, x, y, selection, hoverLink);
+    const { cellW, cellH, baseline, fontFamily, fontSize } = this.metrics;
+    const ctx = this.ctx;
+    const cols = model.cols;
+    const rowOff = y * cols;
+    const py = y * cellH;
+    const pal = this.palette;
+
+    // --- Pass 1: backgrounds, coalescing runs of the same color into one rect.
+    let runStart = 0;
+    let runColor = null;
+    const flush = (end, color) => {
+      if (color !== null && end > runStart) {
+        ctx.fillStyle = color;
+        ctx.fillRect(runStart * cellW, py, (end - runStart) * cellW, cellH);
+      }
+    };
+    for (let x = 0; x < cols; x++) {
+      const i = rowOff + x;
+      const flags = model.flags[i];
+      const inverse = (flags & ATTR.INVERSE) !== 0;
+      const bg = inverse
+        ? pal.resolveCss(model.fg[i], true, (flags & ATTR.BOLD) !== 0)
+        : pal.resolveCss(model.bg[i], false, false);
+      if (bg !== runColor) {
+        flush(x, runColor);
+        runStart = x;
+        runColor = bg;
+      }
     }
-    void cellW;
+    flush(cols, runColor);
+
+    // --- Selection overlay (batched runs), painted over the backgrounds.
+    if (selection) {
+      let selStart = -1;
+      for (let x = 0; x <= cols; x++) {
+        const sel = x < cols && this._selected(selection, x, y);
+        if (sel && selStart < 0) selStart = x;
+        else if (!sel && selStart >= 0) {
+          ctx.fillStyle = pal.selection;
+          ctx.fillRect(selStart * cellW, py, (x - selStart) * cellW, cellH);
+          selStart = -1;
+        }
+      }
+    }
+
+    // --- Pass 2: glyphs + decorations. Only touch ctx.font / fillStyle when the
+    // style actually changes (state changes are the expensive part of Canvas2D).
+    let curFont = null;
+    let curFill = null;
+    let curAlpha = 1;
+    for (let x = 0; x < cols; x++) {
+      const i = rowOff + x;
+      const flags = model.flags[i];
+      if (flags & ATTR.WIDE_SPACER) continue;
+      const cp = model.cp[i];
+      const invisible = (flags & ATTR.INVISIBLE) !== 0;
+      const px = x * cellW;
+      const w = flags & ATTR.WIDE ? cellW * 2 : cellW;
+      const bold = (flags & ATTR.BOLD) !== 0;
+      const inverse = (flags & ATTR.INVERSE) !== 0;
+      let fg = inverse
+        ? pal.resolveCss(model.bg[i], false, false)
+        : pal.resolveCss(model.fg[i], true, bold);
+
+      if (cp !== 0x20 && cp !== 0 && !invisible) {
+        let font = '';
+        if (flags & ATTR.ITALIC) font += 'italic ';
+        if (bold) font += 'bold ';
+        font += `${fontSize}px ${fontFamily}`;
+        if (font !== curFont) {
+          ctx.font = font;
+          curFont = font;
+        }
+        if (fg !== curFill) {
+          ctx.fillStyle = fg;
+          curFill = fg;
+        }
+        const alpha = flags & ATTR.DIM ? 0.6 : 1;
+        if (alpha !== curAlpha) {
+          ctx.globalAlpha = alpha;
+          curAlpha = alpha;
+        }
+        ctx.fillText(model.clusterAt(i), px, py + baseline);
+      }
+
+      // Underline / strikethrough / link hover.
+      const hovered =
+        hoverLink && hoverLink.y === y && x >= hoverLink.x0 && x <= hoverLink.x1;
+      if (flags & ATTR.UNDERLINE || hovered) {
+        if (fg !== curFill) {
+          ctx.fillStyle = fg;
+          curFill = fg;
+        }
+        ctx.fillRect(px, py + baseline + 2, w, 1);
+      }
+      if (flags & ATTR.STRIKETHROUGH) {
+        if (fg !== curFill) {
+          ctx.fillStyle = fg;
+          curFill = fg;
+        }
+        ctx.fillRect(px, py + cellH * 0.55, w, 1);
+      }
+    }
+    if (curAlpha !== 1) ctx.globalAlpha = 1;
   }
 
   _drawCell(model, x, y, selection, hoverLink) {

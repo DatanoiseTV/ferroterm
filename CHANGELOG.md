@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-07-04
+
+### Performance
+- **Render hot path: no per-cell string allocation.** The WebGL glyph atlas is
+  now keyed by a small integer for single-scalar cells (the overwhelming
+  majority) instead of building a `${text} ${flags}` string per cell per frame;
+  only real grapheme clusters take the string path. This removes ~10k string
+  allocations per full-screen frame and the GC stutter they caused — WebGL
+  full-screen redraw dropped from ~1.23 ms to ~0.97 ms best-case and, more
+  importantly, stopped spiking to ~5 ms on GC. The model also interns ASCII
+  single-character strings so `clusterAt` never allocates for ASCII.
+- **Canvas renderer batching.** Row draws now coalesce runs of identical
+  background color into a single `fillRect`, set `ctx.font` / `fillStyle` /
+  `globalAlpha` only when the value actually changes (Canvas2D state changes are
+  the expensive part), batch selection spans, and draw underlines/strikethroughs
+  as `fillRect`s. Full-screen redraw dropped from ~5.3 ms to ~3.1 ms (1.7×).
+
+### Fixed
+- Removed a stray NUL byte that had crept into the WebGL glyph cache-key
+  template literal.
+
 ## [0.3.0] - 2026-07-04
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "ferroterm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A fast, secure terminal emulator component: a from-scratch VT100/xterm core in Rust/WebAssembly with Canvas2D and WebGL renderers.",
   "type": "module",
   "main": "./src/index.js",

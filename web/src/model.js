@@ -5,6 +5,11 @@
 const SNAPSHOT_MAGIC = 0xf3e70001;
 const CELL_WORDS = 6; // [codepoint, fg, bg, flags, link, grapheme]
 
+// Interned single-character strings for ASCII, so the render hot path never
+// allocates via String.fromCodePoint for the overwhelmingly common case.
+const ASCII = new Array(128);
+for (let c = 0; c < 128; c++) ASCII[c] = String.fromCharCode(c);
+
 export class GridModel {
   constructor(cols, rows) {
     this.resize(cols, rows);
@@ -102,7 +107,8 @@ export class GridModel {
       if (s) return s;
     }
     const cp = this.cp[i];
-    return cp === 0 ? ' ' : String.fromCodePoint(cp);
+    if (cp < 128) return cp === 0 ? ' ' : ASCII[cp]; // hot path, no allocation
+    return String.fromCodePoint(cp);
   }
 
   /** Extract the text of row `y` as a string (for selection / link scanning). */
