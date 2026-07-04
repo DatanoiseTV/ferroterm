@@ -212,7 +212,14 @@ impl Buffer {
     /// padded/truncated to `cols`), reset the scroll region and dirty state, and
     /// place the cursor. Used by reflow-on-resize to install the rewrapped
     /// screen. `saved` is preserved by the caller if needed.
-    pub fn set_grid(&mut self, cols: usize, rows: usize, mut lines: Vec<Line>, cx: usize, cy: usize) {
+    pub fn set_grid(
+        &mut self,
+        cols: usize,
+        rows: usize,
+        mut lines: Vec<Line>,
+        cx: usize,
+        cy: usize,
+    ) {
         let cols = cols.max(1);
         let rows = rows.max(1);
         lines.truncate(rows);

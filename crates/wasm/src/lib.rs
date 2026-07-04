@@ -264,7 +264,12 @@ impl Terminal {
             return Vec::new();
         };
         self.scratch.clear();
-        encode_key(k, decode_mods(mods), self.inner.modes().app_cursor_keys, &mut self.scratch);
+        encode_key(
+            k,
+            decode_mods(mods),
+            self.inner.modes().app_cursor_keys,
+            &mut self.scratch,
+        );
         self.scratch.clone()
     }
 

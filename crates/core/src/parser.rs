@@ -314,9 +314,7 @@ impl Parser {
         self.utf8_cp |= (b as u32 & 0x3F) << (6 * self.utf8_remaining as u32);
         if self.utf8_remaining == 0 {
             let cp = self.utf8_cp;
-            let valid = cp >= self.utf8_min
-                && cp <= 0x10_FFFF
-                && !(0xD800..=0xDFFF).contains(&cp);
+            let valid = cp >= self.utf8_min && cp <= 0x10_FFFF && !(0xD800..=0xDFFF).contains(&cp);
             let c = if valid {
                 char::from_u32(cp).unwrap_or('\u{FFFD}')
             } else {
@@ -437,12 +435,7 @@ impl Parser {
             0x20..=0x2f => self.collect(b),
             0x40..=0x7e => {
                 self.params.ensure_first();
-                perform.csi_dispatch(
-                    &self.params,
-                    &self.intermediates,
-                    self.ignoring,
-                    b as char,
-                );
+                perform.csi_dispatch(&self.params, &self.intermediates, self.ignoring, b as char);
                 self.state = State::Ground;
             }
             0x30..=0x3f => {

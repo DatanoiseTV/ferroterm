@@ -27,21 +27,21 @@ pub const SNAPSHOT_CELL_WORDS: usize = 6;
 /// keyboard and mouse input the way the running program expects.
 #[derive(Clone, Copy, Debug)]
 pub struct Modes {
-    pub autowrap: bool,          // DECAWM (7)
-    pub cursor_visible: bool,    // DECTCEM (25)
-    pub cursor_blink: bool,      // (12)
-    pub app_cursor_keys: bool,   // DECCKM (1)
-    pub app_keypad: bool,        // DECKPAM
-    pub insert: bool,            // IRM (4)
-    pub newline_mode: bool,      // LNM (20)
-    pub bracketed_paste: bool,   // (2004)
-    pub focus_events: bool,      // (1004)
-    pub origin: bool,            // DECOM (6)
+    pub autowrap: bool,        // DECAWM (7)
+    pub cursor_visible: bool,  // DECTCEM (25)
+    pub cursor_blink: bool,    // (12)
+    pub app_cursor_keys: bool, // DECCKM (1)
+    pub app_keypad: bool,      // DECKPAM
+    pub insert: bool,          // IRM (4)
+    pub newline_mode: bool,    // LNM (20)
+    pub bracketed_paste: bool, // (2004)
+    pub focus_events: bool,    // (1004)
+    pub origin: bool,          // DECOM (6)
     /// Mouse tracking: 0=off, 9=X10, 1000=button, 1002=drag, 1003=any.
     pub mouse_mode: u16,
     /// Mouse encoding: 0=default, 1006=SGR.
     pub mouse_sgr: bool,
-    pub reverse_video: bool,     // DECSCNM (5)
+    pub reverse_video: bool, // DECSCNM (5)
 }
 
 impl Default for Modes {
@@ -562,7 +562,10 @@ impl Terminal {
         }
         s.push(c);
         let id = self.intern_grapheme(s);
-        let new = Cell { grapheme: id, ..cell };
+        let new = Cell {
+            grapheme: id,
+            ..cell
+        };
         self.buf_mut().line_mut(y)[x] = new;
     }
 
@@ -827,7 +830,11 @@ impl Terminal {
             buf.scroll_bottom = bottom;
         }
         // Cursor moves to origin (home of region if DECOM, else screen home).
-        let y = if self.modes.origin { self.buf().scroll_top } else { 0 };
+        let y = if self.modes.origin {
+            self.buf().scroll_top
+        } else {
+            0
+        };
         self.buf_mut().goto(0, y);
     }
 
@@ -1073,8 +1080,13 @@ impl Terminal {
     /// the low 24 bits) so it can answer OSC color *queries* accurately for
     /// colors the running program has not overridden.
     pub fn set_default_colors(&mut self, fg: u32, bg: u32, cursor: u32) {
-        let unpack =
-            |c: u32| (((c >> 16) & 0xff) as u8, ((c >> 8) & 0xff) as u8, (c & 0xff) as u8);
+        let unpack = |c: u32| {
+            (
+                ((c >> 16) & 0xff) as u8,
+                ((c >> 8) & 0xff) as u8,
+                (c & 0xff) as u8,
+            )
+        };
         self.default_fg = unpack(fg);
         self.default_bg = unpack(bg);
         self.default_cursor = unpack(cursor);
@@ -1439,7 +1451,7 @@ impl Perform for Terminal {
         // harmless to break on too.)
         self.break_grapheme();
         match byte {
-            0x07 => self.bell_count += 1,       // BEL
+            0x07 => self.bell_count += 1, // BEL
             0x08 => {
                 // BS
                 let x = self.buf().cursor.x;
@@ -1606,15 +1618,15 @@ impl Perform for Terminal {
         self.break_grapheme();
         if intermediates.is_empty() {
             match byte {
-                b'D' => self.linefeed(),          // IND
+                b'D' => self.linefeed(), // IND
                 b'E' => {
                     self.carriage_return();
                     self.linefeed();
                 } // NEL
-                b'M' => self.reverse_index(),     // RI
-                b'7' => self.save_cursor(),       // DECSC
-                b'8' => self.restore_cursor(),    // DECRC
-                b'c' => self.full_reset(),        // RIS
+                b'M' => self.reverse_index(), // RI
+                b'7' => self.save_cursor(), // DECSC
+                b'8' => self.restore_cursor(), // DECRC
+                b'c' => self.full_reset(), // RIS
                 b'=' => self.modes.app_keypad = true,
                 b'>' => self.modes.app_keypad = false,
                 _ => {}

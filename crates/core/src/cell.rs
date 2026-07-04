@@ -1,8 +1,7 @@
 //! Cell contents and text attributes.
 
 /// A terminal color. Kept deliberately small (`Copy`) so cells stay cheap to move.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[derive(Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Color {
     /// The terminal's default foreground/background (theme-defined).
     #[default]
@@ -12,7 +11,6 @@ pub enum Color {
     /// A 24-bit true color.
     Rgb(u8, u8, u8),
 }
-
 
 impl Color {
     /// Pack into a `u32` for the render snapshot.
@@ -25,9 +23,7 @@ impl Color {
         match self {
             Color::Default => 0x0000_0000,
             Color::Indexed(i) => 0x0100_0000 | i as u32,
-            Color::Rgb(r, g, b) => {
-                0x0200_0000 | ((r as u32) << 16) | ((g as u32) << 8) | b as u32
-            }
+            Color::Rgb(r, g, b) => 0x0200_0000 | ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
         }
     }
 }

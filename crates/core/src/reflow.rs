@@ -53,9 +53,7 @@ pub fn reflow(phys: &[Line], cursor_row: usize, cursor_col: usize, new_cols: usi
             // begins with a wide glyph was padded by the wide-glyph split guard
             // (see below): that pad cell is not real content, so drop it before
             // rejoining or it would accrete a spurious space on every reflow.
-            if cells.last() == Some(&default)
-                && phys[i].first().is_some_and(|c| c.is_wide())
-            {
+            if cells.last() == Some(&default) && phys[i].first().is_some_and(|c| c.is_wide()) {
                 cells.pop();
             }
         }

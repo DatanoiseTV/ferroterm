@@ -8,7 +8,15 @@ use ferroterm_core::Terminal;
 
 fn gen(kind: &str, target: usize) -> Vec<u8> {
     let words = [
-        "ferroterm", "wasm", "rust", "render", "parser", "vt100", "grid", "scroll", "buffer",
+        "ferroterm",
+        "wasm",
+        "rust",
+        "render",
+        "parser",
+        "vt100",
+        "grid",
+        "scroll",
+        "buffer",
         "atlas",
     ];
     let mut out = Vec::with_capacity(target + 4096);
@@ -32,9 +40,7 @@ fn gen(kind: &str, target: usize) -> Vec<u8> {
             }
             "sgr" => {
                 for _ in 0..10 {
-                    out.extend_from_slice(
-                        format!("\x1b[38;5;{}m", next() % 256).as_bytes(),
-                    );
+                    out.extend_from_slice(format!("\x1b[38;5;{}m", next() % 256).as_bytes());
                     out.extend_from_slice(words[(next() as usize) % words.len()].as_bytes());
                     out.push(b' ');
                 }
@@ -43,8 +49,13 @@ fn gen(kind: &str, target: usize) -> Vec<u8> {
             "truecolor" => {
                 for _ in 0..8 {
                     out.extend_from_slice(
-                        format!("\x1b[38;2;{};{};{}m", next() % 256, next() % 256, next() % 256)
-                            .as_bytes(),
+                        format!(
+                            "\x1b[38;2;{};{};{}m",
+                            next() % 256,
+                            next() % 256,
+                            next() % 256
+                        )
+                        .as_bytes(),
                     );
                     out.extend_from_slice(words[(next() as usize) % words.len()].as_bytes());
                     out.push(b' ');
@@ -57,7 +68,7 @@ fn gen(kind: &str, target: usize) -> Vec<u8> {
                     line.push_str(words[(next() as usize) % words.len()]);
                     line.push(' ');
                 }
-                out.extend_from_slice(line[..80].as_bytes());
+                out.extend_from_slice(&line.as_bytes()[..80]);
                 out.extend_from_slice(b"\r\n");
             }
             "unicode" => {
@@ -114,5 +125,8 @@ fn main() {
     println!();
     let p = gen("sgr", target);
     let (us, words) = bench_snapshot(&p, cols, rows);
-    println!("snapshot(full): {us:.1} us/frame ({words} words, {:.1} ns/word)", us * 1000.0 / words as f64);
+    println!(
+        "snapshot(full): {us:.1} us/frame ({words} words, {:.1} ns/word)",
+        us * 1000.0 / words as f64
+    );
 }

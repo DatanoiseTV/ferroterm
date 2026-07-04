@@ -195,7 +195,7 @@ fn snapshot_header_is_well_formed() {
     assert_eq!(snap[2], 5); // rows
     let n_rows = snap[6] as usize;
     assert_eq!(n_rows, 5); // force => all rows
-    // First row block: index then cols*words.
+                           // First row block: index then cols*words.
     assert_eq!(snap[7], 0); // row index 0
     let first_cp = snap[8]; // codepoint of cell (0,0)
     assert_eq!(first_cp, 'h' as u32);
@@ -382,8 +382,8 @@ fn hard_newlines_are_preserved_across_reflow() {
     let mut t = wide_term(10, 4, 100);
     t.feed(b"hello\r\nworld");
     t.resize(3, 4); // "hello" -> "hel","lo"; "world" -> "wor","ld"
-    // The proof that the hard break survived: widening back keeps them on two
-    // separate physical rows, i.e. they were never joined into one wrapped line.
+                    // The proof that the hard break survived: widening back keeps them on two
+                    // separate physical rows, i.e. they were never joined into one wrapped line.
     t.resize(20, 4);
     assert_eq!(row_text(&t, 0).trim_end(), "hello");
     assert_eq!(row_text(&t, 1).trim_end(), "world");
@@ -435,8 +435,12 @@ fn reflow_keeps_wide_glyph_intact() {
         let line = t.active_line(y);
         for x in 0..line.len() {
             if line[x].pen.has(attr::WIDE) {
-                assert!(x + 1 < line.len() && line[x + 1].pen.has(attr::WIDE_SPACER),
-                    "wide glyph at ({},{}) lost its spacer", x, y);
+                assert!(
+                    x + 1 < line.len() && line[x + 1].pen.has(attr::WIDE_SPACER),
+                    "wide glyph at ({},{}) lost its spacer",
+                    x,
+                    y
+                );
             }
         }
     }
@@ -480,7 +484,7 @@ fn osc4_sets_palette_index() {
     let ex = t.palette_export();
     // export layout: [fg, bg, cursor, c0, c1, ...]; index 1 -> ex[3+1].
     assert_eq!(ex[3 + 1], 0x0200_0000 | 0x00ff00);
-    assert_eq!(ex[3 + 0], 0); // index 0 untouched
+    assert_eq!(ex[3], 0); // index 0 untouched
 }
 
 #[test]
@@ -573,14 +577,14 @@ fn sixel_image_scrolls_and_clears() {
     let mut t = term(); // 5 rows
     t.set_cell_pixels(8, 16);
     t.feed(b"\x1bPq#1;2;100;0;0#1!4~\x1b\\"); // image at serial 0
-    // Scroll the screen a few lines; the image's viewport row must decrease.
+                                              // Scroll the screen a few lines; the image's viewport row must decrease.
     for _ in 0..3 {
         t.feed(b"\r\n");
     }
     let pl = t.image_placements();
     assert!(!pl.is_empty());
     assert!(pl[1] < 0 || pl[1] < 3); // row moved up as content scrolled
-    // Full clear (ED 2) drops on-screen images.
+                                     // Full clear (ED 2) drops on-screen images.
     t.feed(b"\x1b[2J");
     // Image at serial 0 is above the screen now (scrolled), so it survives ED2;
     // RIS drops everything.

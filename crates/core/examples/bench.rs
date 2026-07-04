@@ -14,7 +14,15 @@ use ferroterm_core::Terminal;
 fn build_payload(target_bytes: usize) -> Vec<u8> {
     // A deterministic pseudo-random stream (no rng dependency).
     let words = [
-        "ferroterm", "wasm", "rust", "render", "parser", "vt100", "grid", "scroll", "buffer",
+        "ferroterm",
+        "wasm",
+        "rust",
+        "render",
+        "parser",
+        "vt100",
+        "grid",
+        "scroll",
+        "buffer",
     ];
     let mut out = Vec::with_capacity(target_bytes + 4096);
     let mut seed = 0x9e3779b9u32;
