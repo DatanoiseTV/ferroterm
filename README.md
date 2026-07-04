@@ -4,6 +4,8 @@ A fast, secure terminal emulator **core** written from scratch in Rust, compiled
 to WebAssembly, and wrapped in a small, dependency-free web component with both
 **Canvas2D** and **WebGL** renderers.
 
+<img width="751" height="386" alt="Ferroterm" src="https://github.com/user-attachments/assets/89747e7d-311d-4fa4-a599-bb7b9b6cc8c3" />
+
 It is a clean-room reimplementation of the functionality of a browser terminal
 (the problem [xterm.js](https://xtermjs.org) solves), not a fork: the escape
 parser, grid model, scrollback and input encoding are all new Rust code. The
