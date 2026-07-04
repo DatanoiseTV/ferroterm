@@ -21,6 +21,13 @@ All notable changes to this project are documented here. The format is based on
   `wrapped` flag set only on auto-wrap), wide glyphs are never split across the
   boundary, the cursor is tracked onto the same character, and overflow moves
   between screen and scrollback. The alternate screen is not reflowed.
+- **Dynamic palette (OSC 4/10/11/12/104/110/111/112).** Palette entries and the
+  default foreground / background / cursor colors set by the running program are
+  now applied live (previously parsed and dropped), and `?` color queries are
+  answered with the current value. The core keeps the override state and a
+  version counter; the JS component re-themes and repaints when it changes.
+  New APIs: `Terminal::palette_version` / `palette_export` / `set_default_colors`
+  and their wasm bindings.
 
 ## [0.2.0] - 2026-07-04
 

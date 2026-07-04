@@ -97,6 +97,27 @@ impl Terminal {
         self.inner.grapheme(id).map(|s| s.to_string())
     }
 
+    /// Counter bumped whenever the dynamic palette (OSC 4/10/11/12/104…)
+    /// changes; the front-end re-reads `paletteExport` when it differs.
+    #[wasm_bindgen(js_name = paletteVersion)]
+    pub fn palette_version(&self) -> u32 {
+        self.inner.palette_version()
+    }
+
+    /// Current palette overrides: `[fg, bg, cursor, c0..c255]` (259 words), each
+    /// `0` for "no override" or a packed `0x02_RRGGBB`.
+    #[wasm_bindgen(js_name = paletteExport)]
+    pub fn palette_export(&self) -> Vec<u32> {
+        self.inner.palette_export()
+    }
+
+    /// Provide the theme's default fg/bg/cursor (packed RGB, low 24 bits) so the
+    /// core can answer OSC color queries for un-overridden colors.
+    #[wasm_bindgen(js_name = setDefaultColors)]
+    pub fn set_default_colors(&mut self, fg: u32, bg: u32, cursor: u32) {
+        self.inner.set_default_colors(fg, bg, cursor);
+    }
+
     // --- scrollback viewport ------------------------------------------------
 
     #[wasm_bindgen(js_name = scrollLines)]

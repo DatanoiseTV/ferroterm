@@ -71,21 +71,56 @@ function buildXterm256(ansi16) {
  */
 export class Palette {
   constructor(theme = DEFAULT_THEME, brightenBold = true) {
-    this.setTheme(theme);
+    // OSC-driven overrides (null = use theme / standard palette). `indexed`
+    // holds up to 256 `[r,g,b]` entries or null; fg/bg/cursor are `[r,g,b]`.
+    this._ovIndexed = new Array(256).fill(null);
+    this._ovFg = null;
+    this._ovBg = null;
+    this._ovCursor = null;
     this.brightenBold = brightenBold;
+    this.setTheme(theme);
   }
 
   setTheme(theme) {
     this.theme = { ...DEFAULT_THEME, ...theme };
-    this.table = buildXterm256(this.theme.ansi);
+    this._rebuild();
+  }
+
+  /**
+   * Apply the core's packed palette export (`[fg, bg, cursor, c0..c255]`, each
+   * `0` = no override or `0x02_RRGGBB`). Returns true if anything changed.
+   */
+  applyOverrides(u32) {
+    if (!u32 || u32.length < 3) return false;
+    const unpack = (w) =>
+      w === 0 ? null : [(w >> 16) & 0xff, (w >> 8) & 0xff, w & 0xff];
+    this._ovFg = unpack(u32[0]);
+    this._ovBg = unpack(u32[1]);
+    this._ovCursor = unpack(u32[2]);
+    for (let i = 0; i < 256; i++) this._ovIndexed[i] = unpack(u32[3 + i] || 0);
+    this._rebuild();
+    return true;
+  }
+
+  /** Recompute derived tables/strings from theme + current overrides. */
+  _rebuild() {
+    const base = buildXterm256(this.theme.ansi);
+    this.table = base.map((c, i) => this._ovIndexed[i] || c);
     this.css = this.table.map((c) => `rgb(${c[0]},${c[1]},${c[2]})`);
-    this.fg = this.theme.foreground;
-    this.bg = this.theme.background;
-    this.cursor = this.theme.cursor;
-    this.cursorAccent = this.theme.cursorAccent;
+    const themeFg = hexToRgb(this.theme.foreground);
+    const themeBg = hexToRgb(this.theme.background);
+    const themeCur = hexToRgb(this.theme.cursor);
+    this.fgRgb = this._ovFg || themeFg;
+    this.bgRgb = this._ovBg || themeBg;
+    const curRgb = this._ovCursor || themeCur;
+    this.cursorRgb = curRgb;
+    const rgbCss = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+    this.fg = rgbCss(this.fgRgb);
+    this.bg = rgbCss(this.bgRgb);
+    this.cursor = rgbCss(curRgb);
+    // Cursor text uses the background over the cursor color (theme-provided).
+    this.cursorAccent = this._ovBg ? this.bg : this.theme.cursorAccent;
     this.selection = this.theme.selection;
-    this.fgRgb = hexToRgb(this.theme.foreground);
-    this.bgRgb = hexToRgb(this.theme.background);
   }
 
   /**

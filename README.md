@@ -32,6 +32,9 @@ and captures input.
   single cell.
 - **Links**: OSC 8 hyperlinks *and* automatic URL detection, with hover-underline
   and click-to-open.
+- **Dynamic palette**: OSC 4 (palette entries), OSC 10/11/12 (default fg / bg /
+  cursor) and OSC 104/110/111/112 (resets) are applied live, including `?`
+  color-query replies.
 - **Two renderers, swappable at runtime**: a Canvas2D renderer that redraws only
   dirty rows, and a WebGL renderer with a dynamic glyph atlas and batched quads.
   WebGL falls back to Canvas2D when unavailable.
@@ -199,7 +202,6 @@ panic/hang" case.
 ## Known limitations (honestly)
 
 - **DCS / Sixel / iTerm images** are recognized and consumed but not rendered.
-- **Palette OSC (4/10/11) and some rare modes** are parsed but not applied.
 - **Reflow** rewraps the primary screen + scrollback on resize, keeping the
   cursor on its character. The alternate screen is intentionally *not* reflowed
   (full-screen apps repaint on `SIGWINCH`), and a cursor parked mid-screen on the

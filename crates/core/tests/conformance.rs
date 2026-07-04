@@ -468,3 +468,70 @@ fn reflow_survives_double_resize_roundtrip() {
     assert!(joined.contains("the quick brown fox"));
     assert!(joined.contains("lazy dog"));
 }
+
+// --- palette OSC (4 / 10 / 11 / 104) ------------------------------------
+
+#[test]
+fn osc4_sets_palette_index() {
+    let mut t = term();
+    let v0 = t.palette_version();
+    t.feed(b"\x1b]4;1;#00ff00\x1b\\"); // set palette index 1 to green
+    assert!(t.palette_version() > v0);
+    let ex = t.palette_export();
+    // export layout: [fg, bg, cursor, c0, c1, ...]; index 1 -> ex[3+1].
+    assert_eq!(ex[3 + 1], 0x0200_0000 | 0x00ff00);
+    assert_eq!(ex[3 + 0], 0); // index 0 untouched
+}
+
+#[test]
+fn osc10_11_set_default_fg_bg() {
+    let mut t = term();
+    t.feed(b"\x1b]10;rgb:ffff/0000/0000\x1b\\"); // fg red
+    t.feed(b"\x1b]11;#0000ff\x1b\\"); // bg blue
+    let ex = t.palette_export();
+    assert_eq!(ex[0], 0x0200_0000 | 0xff0000);
+    assert_eq!(ex[1], 0x0200_0000 | 0x0000ff);
+}
+
+#[test]
+fn osc104_resets_palette() {
+    let mut t = term();
+    t.feed(b"\x1b]4;5;#123456\x1b\\");
+    assert_ne!(t.palette_export()[3 + 5], 0);
+    t.feed(b"\x1b]104;5\x1b\\"); // reset just index 5
+    assert_eq!(t.palette_export()[3 + 5], 0);
+    t.feed(b"\x1b]4;5;#123456\x1b\\");
+    t.feed(b"\x1b]104\x1b\\"); // reset all
+    assert_eq!(t.palette_export()[3 + 5], 0);
+}
+
+#[test]
+fn osc4_query_replies_with_current_color() {
+    let mut t = term();
+    t.set_default_colors(0xe6e6e6, 0x1a1b26, 0xe6e6e6);
+    t.feed(b"\x1b]4;2;#00ff00\x1b\\"); // set index 2 green
+    let _ = t.take_output();
+    t.feed(b"\x1b]4;2;?\x1b\\"); // query index 2
+    let out = String::from_utf8(t.take_output()).unwrap();
+    assert_eq!(out, "\x1b]4;2;rgb:0000/ffff/0000\x1b\\");
+}
+
+#[test]
+fn osc11_query_uses_default_when_unset() {
+    let mut t = term();
+    t.set_default_colors(0xe6e6e6, 0x102030, 0xe6e6e6);
+    t.feed(b"\x1b]11;?\x1b\\"); // query background (never set)
+    let out = String::from_utf8(t.take_output()).unwrap();
+    assert_eq!(out, "\x1b]11;rgb:1010/2020/3030\x1b\\");
+}
+
+#[test]
+fn ris_restores_palette() {
+    let mut t = term();
+    t.feed(b"\x1b]4;1;#00ff00\x1b\\");
+    t.feed(b"\x1b]11;#0000ff\x1b\\");
+    t.feed(b"\x1bc"); // RIS
+    let ex = t.palette_export();
+    assert_eq!(ex[1], 0); // bg override cleared
+    assert_eq!(ex[3 + 1], 0); // index 1 cleared
+}

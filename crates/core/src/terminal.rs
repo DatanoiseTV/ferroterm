@@ -6,8 +6,17 @@ use std::collections::VecDeque;
 
 use crate::cell::{attr, Cell, Color, Pen};
 use crate::grid::{Buffer, Line, SavedCursor};
+use crate::palette;
 use crate::parser::{Params, Parser, Perform};
 use crate::width::char_width;
+
+/// Which dynamic default color an OSC 10/11/12 sequence targets.
+#[derive(Clone, Copy)]
+enum DynColor {
+    Fg,
+    Bg,
+    Cursor,
+}
 
 /// The render-snapshot magic word (little-endian `F3E7` + version).
 pub const SNAPSHOT_MAGIC: u32 = 0xF3E7_0001;
@@ -96,6 +105,21 @@ pub struct Terminal {
     output: Vec<u8>,
     /// BEL counter — host can flash / beep.
     pub bell_count: u32,
+
+    /// Dynamic palette state set via OSC 4/10/11/12. `None` = use the theme /
+    /// standard xterm value. Indexed overrides are the 256 palette entries;
+    /// fg/bg/cursor are the dynamic default colors.
+    palette_indexed: Vec<Option<(u8, u8, u8)>>,
+    palette_fg: Option<(u8, u8, u8)>,
+    palette_bg: Option<(u8, u8, u8)>,
+    palette_cursor: Option<(u8, u8, u8)>,
+    /// Theme defaults the front-end configured, used only to answer OSC color
+    /// *queries* (`?`) for colors the program hasn't overridden.
+    default_fg: (u8, u8, u8),
+    default_bg: (u8, u8, u8),
+    default_cursor: (u8, u8, u8),
+    /// Bumped on every palette change so the front-end knows to re-read.
+    palette_version: u32,
 }
 
 impl Terminal {
@@ -122,6 +146,16 @@ impl Terminal {
             title_dirty: false,
             output: Vec::new(),
             bell_count: 0,
+            palette_indexed: vec![None; 256],
+            palette_fg: None,
+            palette_bg: None,
+            palette_cursor: None,
+            // Match the front-end's DEFAULT_THEME so `?` queries are sensible
+            // before the host calls set_default_colors.
+            default_fg: (0xe6, 0xe6, 0xe6),
+            default_bg: (0x1a, 0x1b, 0x26),
+            default_cursor: (0xe6, 0xe6, 0xe6),
+            palette_version: 0,
         }
     }
 
@@ -783,8 +817,120 @@ impl Terminal {
                 }
             }
             Some("8") => self.osc_hyperlink(params),
+            Some("4") => self.osc_palette(params),
+            Some("10") => self.osc_dynamic_color(params, DynColor::Fg),
+            Some("11") => self.osc_dynamic_color(params, DynColor::Bg),
+            Some("12") => self.osc_dynamic_color(params, DynColor::Cursor),
+            Some("104") => self.osc_reset_palette(params),
+            Some("110") => self.osc_reset_dynamic(DynColor::Fg),
+            Some("111") => self.osc_reset_dynamic(DynColor::Bg),
+            Some("112") => self.osc_reset_dynamic(DynColor::Cursor),
             _ => {}
         }
+    }
+
+    /// OSC 4 ; index ; spec [ ; index ; spec … ] — set palette colors. A spec of
+    /// `?` queries the current value (reply via the host output stream).
+    fn osc_palette(&mut self, params: &[&[u8]]) {
+        let mut i = 1;
+        while i + 1 < params.len() {
+            let Some(idx) = std::str::from_utf8(params[i])
+                .ok()
+                .and_then(|s| s.trim().parse::<usize>().ok())
+            else {
+                i += 2;
+                continue;
+            };
+            let spec = params[i + 1];
+            if idx < 256 {
+                if spec == b"?" {
+                    let (r, g, b) = self.current_indexed(idx as u8);
+                    self.reply_color(&format!("4;{}", idx), r, g, b);
+                } else if let Some(rgb) = palette::parse_color_spec(spec) {
+                    self.palette_indexed[idx] = Some(rgb);
+                    self.palette_version += 1;
+                }
+            }
+            i += 2;
+        }
+    }
+
+    /// OSC 10/11/12 ; spec — set the default fg / bg / cursor color. `?` queries.
+    fn osc_dynamic_color(&mut self, params: &[&[u8]], which: DynColor) {
+        let Some(spec) = params.get(1) else {
+            return;
+        };
+        if *spec == b"?" {
+            let (r, g, b) = self.current_dynamic(which);
+            let code = match which {
+                DynColor::Fg => "10",
+                DynColor::Bg => "11",
+                DynColor::Cursor => "12",
+            };
+            self.reply_color(code, r, g, b);
+            return;
+        }
+        if let Some(rgb) = palette::parse_color_spec(spec) {
+            match which {
+                DynColor::Fg => self.palette_fg = Some(rgb),
+                DynColor::Bg => self.palette_bg = Some(rgb),
+                DynColor::Cursor => self.palette_cursor = Some(rgb),
+            }
+            self.palette_version += 1;
+        }
+    }
+
+    /// OSC 104 [ ; index … ] — reset palette entries (all if none given).
+    fn osc_reset_palette(&mut self, params: &[&[u8]]) {
+        if params.len() <= 1 {
+            for e in &mut self.palette_indexed {
+                *e = None;
+            }
+        } else {
+            for p in &params[1..] {
+                if let Some(idx) = std::str::from_utf8(p)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<usize>().ok())
+                {
+                    if idx < 256 {
+                        self.palette_indexed[idx] = None;
+                    }
+                }
+            }
+        }
+        self.palette_version += 1;
+    }
+
+    /// OSC 110/111/112 — reset the default fg / bg / cursor color to the theme.
+    fn osc_reset_dynamic(&mut self, which: DynColor) {
+        match which {
+            DynColor::Fg => self.palette_fg = None,
+            DynColor::Bg => self.palette_bg = None,
+            DynColor::Cursor => self.palette_cursor = None,
+        }
+        self.palette_version += 1;
+    }
+
+    fn current_indexed(&self, i: u8) -> (u8, u8, u8) {
+        self.palette_indexed[i as usize].unwrap_or_else(|| palette::xterm256(i))
+    }
+
+    fn current_dynamic(&self, which: DynColor) -> (u8, u8, u8) {
+        match which {
+            DynColor::Fg => self.palette_fg.unwrap_or(self.default_fg),
+            DynColor::Bg => self.palette_bg.unwrap_or(self.default_bg),
+            DynColor::Cursor => self.palette_cursor.unwrap_or(self.default_cursor),
+        }
+    }
+
+    /// Emit an OSC color report `ESC ] <code> ; rgb:RRRR/GGGG/BBBB ST` (the
+    /// 16-bit form xterm uses; each 8-bit channel is doubled).
+    fn reply_color(&mut self, code: &str, r: u8, g: u8, b: u8) {
+        let msg = format!(
+            "\x1b]{};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}\x1b\\",
+            code, r, r, g, g, b, b
+        );
+        self.output.extend_from_slice(msg.as_bytes());
     }
 
     /// OSC 8 ; params ; URI — set or clear the current hyperlink.
@@ -838,6 +984,53 @@ impl Terminal {
         // RIS. The table is deduplicated and each cluster is length-bounded, so
         // it can't grow unboundedly in practice.
         self.break_grapheme();
+        // RIS restores the default palette.
+        for e in &mut self.palette_indexed {
+            *e = None;
+        }
+        self.palette_fg = None;
+        self.palette_bg = None;
+        self.palette_cursor = None;
+        self.palette_version += 1;
+    }
+
+    /// A monotonically increasing counter bumped whenever the dynamic palette
+    /// (OSC 4/10/11/12/104/110/111/112) changes. The front-end compares it each
+    /// frame and re-reads [`Terminal::palette_export`] when it differs.
+    pub fn palette_version(&self) -> u32 {
+        self.palette_version
+    }
+
+    /// Export the current palette overrides as `[fg, bg, cursor, c0..c255]`
+    /// (259 words). Each word is `0` when there is no override, otherwise a
+    /// packed `0x02_RRGGBB` (RGB kind, matching [`Color::pack`]). The front-end
+    /// applies these on top of its theme.
+    pub fn palette_export(&self) -> Vec<u32> {
+        fn pack(c: Option<(u8, u8, u8)>) -> u32 {
+            match c {
+                Some((r, g, b)) => 0x0200_0000 | ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
+                None => 0,
+            }
+        }
+        let mut out = Vec::with_capacity(259);
+        out.push(pack(self.palette_fg));
+        out.push(pack(self.palette_bg));
+        out.push(pack(self.palette_cursor));
+        for c in &self.palette_indexed {
+            out.push(pack(*c));
+        }
+        out
+    }
+
+    /// Tell the core the theme's default fg / bg / cursor colors (packed RGB in
+    /// the low 24 bits) so it can answer OSC color *queries* accurately for
+    /// colors the running program has not overridden.
+    pub fn set_default_colors(&mut self, fg: u32, bg: u32, cursor: u32) {
+        let unpack =
+            |c: u32| (((c >> 16) & 0xff) as u8, ((c >> 8) & 0xff) as u8, (c & 0xff) as u8);
+        self.default_fg = unpack(fg);
+        self.default_bg = unpack(bg);
+        self.default_cursor = unpack(cursor);
     }
 
     /// Resolve a grapheme-cluster id (as emitted in the snapshot) to its full

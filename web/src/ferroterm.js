@@ -90,6 +90,10 @@ export class Ferroterm {
     // Let the model resolve grapheme-cluster ids (base + combining marks, ZWJ
     // emoji, flags) to their full strings for rendering, selection and copy.
     this.model.graphemeResolver = (id) => this.term.grapheme(id);
+    // Palette: tell the core the theme defaults (for OSC color queries) and
+    // track the OSC-driven override version so we can re-theme on change.
+    this._paletteVersion = this.term.paletteVersion();
+    this._syncDefaultColors();
 
     this._dataCbs = [];
     this._titleCbs = [];
@@ -138,6 +142,30 @@ export class Ferroterm {
     this._drainOutput();
     this._maybeBell();
     this._maybeTitle();
+    this._maybePalette();
+    if (this.attached) this._scheduleRender();
+  }
+
+  /** Pack the palette's current default colors and hand them to the core so it
+   *  can answer OSC 10/11/12 color queries for un-overridden colors. */
+  _syncDefaultColors() {
+    const pack = (c) => ((c[0] & 0xff) << 16) | ((c[1] & 0xff) << 8) | (c[2] & 0xff);
+    this.term.setDefaultColors(
+      pack(this.palette.fgRgb),
+      pack(this.palette.bgRgb),
+      pack(this.palette.cursorRgb),
+    );
+  }
+
+  /** If the running program changed the palette via OSC 4/10/11/104, pull the
+   *  new overrides into the palette and force a full repaint. */
+  _maybePalette() {
+    const v = this.term.paletteVersion();
+    if (v === this._paletteVersion) return;
+    this._paletteVersion = v;
+    this.palette.applyOverrides(this.term.paletteExport());
+    if (this.container) this.container.style.background = this.palette.bg;
+    this._forceNext = true;
     if (this.attached) this._scheduleRender();
   }
 
@@ -246,6 +274,7 @@ export class Ferroterm {
 
   setTheme(theme) {
     this.palette.setTheme(theme);
+    this._syncDefaultColors();
     if (this.container) this.container.style.background = this.palette.bg;
     this._forceNext = true;
     if (this.attached) this._scheduleRender();
