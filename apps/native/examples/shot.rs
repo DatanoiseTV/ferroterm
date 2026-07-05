@@ -8,8 +8,6 @@
 //! box-drawing, bold/italic, underline/strikethrough and an inline image); it
 //! avoids CJK/emoji, which the bundled monospace lacks.
 
-use std::io::BufWriter;
-
 use ferroterm_core::Terminal;
 use ferroterm_native::atlas::Atlas;
 use ferroterm_native::images::{ImageLayer, ImageQuad};
@@ -246,13 +244,8 @@ fn main() {
     drop(data);
     buf.unmap();
 
-    let file = std::fs::File::create(&out).expect("create png");
-    let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .expect("png header")
-        .write_image_data(&rgba)
-        .expect("png data");
+    let img = image::RgbaImage::from_raw(w, h, rgba).expect("rgba buffer");
+    img.save_with_format(&out, image::ImageFormat::Png)
+        .expect("write png");
     println!("wrote {out} ({w}x{h})");
 }

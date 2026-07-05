@@ -36,16 +36,18 @@ fn b64(data: &[u8]) -> String {
     out
 }
 
-/// Encode RGBA pixels as a PNG file (via the `png` crate).
-fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+/// Encode RGBA pixels in the given format (via the `image` crate).
+fn encode(w: u32, h: u32, rgba: &[u8], fmt: image::ImageFormat) -> Vec<u8> {
+    let img = image::RgbaImage::from_raw(w, h, rgba.to_vec()).unwrap();
     let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, w, h);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header().unwrap().write_image_data(rgba).unwrap();
-    }
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut out), fmt)
+        .unwrap();
     out
+}
+
+fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    encode(w, h, rgba, image::ImageFormat::Png)
 }
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -600,13 +602,30 @@ fn kitty_image_renders_end_to_end() {
 }
 
 #[test]
-fn decode_png_roundtrips_rgba() {
+fn decode_image_roundtrips_png() {
     // 4x4 solid RGBA encoded then decoded should come back byte-identical.
     let rgba: Vec<u8> = (0..16).flat_map(|_| [200u8, 40, 60, 255]).collect();
     let png = encode_png(4, 4, &rgba);
-    let (w, h, out) = ferroterm_native::images::decode_png(&png).expect("decode");
+    let (w, h, out) = ferroterm_native::images::decode_image(&png).expect("decode");
     assert_eq!((w, h), (4, 4));
     assert_eq!(out, rgba, "decoded RGBA must match the source");
+}
+
+#[test]
+fn decode_image_handles_jpeg() {
+    // JPEG is lossy, so assert dimensions exactly and the (solid) color loosely.
+    let rgba: Vec<u8> = (0..64 * 64).flat_map(|_| [40u8, 160, 220, 255]).collect();
+    let jpg = encode(64, 64, &rgba, image::ImageFormat::Jpeg);
+    let (w, h, out) = ferroterm_native::images::decode_image(&jpg).expect("decode jpeg");
+    assert_eq!((w, h), (64, 64));
+    // Sample a center pixel; allow generous JPEG tolerance.
+    let o = ((32 * 64 + 32) * 4) as usize;
+    let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+    assert!(
+        d(out[o], 40) <= 24 && d(out[o + 1], 160) <= 24 && d(out[o + 2], 220) <= 24,
+        "jpeg color off: {:?}",
+        &out[o..o + 4]
+    );
 }
 
 #[test]
@@ -677,7 +696,7 @@ fn kitty_png_image_decodes_and_renders() {
     let p = &placements[0..5];
     let (id, _row, _col, pw, ph) = (p[0] as u32, p[1], p[2], p[3] as u32, p[4] as u32);
     let (dw, dh, drgba) =
-        ferroterm_native::images::decode_png(&term.image_encoded(id)).expect("decode png");
+        ferroterm_native::images::decode_image(&term.image_encoded(id)).expect("decode png");
     let quad = ImageQuad {
         id,
         src_w: dw,

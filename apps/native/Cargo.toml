@@ -1,6 +1,6 @@
 [package]
 name = "ferroterm-native"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Native GPU terminal built on ferroterm-core (winit + wgpu), no webview."
@@ -22,7 +22,15 @@ bytemuck = { version = "1", features = ["derive"] }
 fontdue = "0.9"
 ttf-parser = "0.24"
 portable-pty = "0.8"
-png = "0.17"
+# Decoders for encoded inline images (iTerm2, Kitty f=100). The web front-end
+# uses the browser; the native app has no browser, so it links these directly.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "bmp",
+    "webp",
+] }
 
 [profile.release]
 opt-level = 3

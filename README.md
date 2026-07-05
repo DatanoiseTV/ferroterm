@@ -190,11 +190,11 @@ cargo test                   # headless render test (offscreen, pixel-asserted)
 Working: shell I/O, keyboard, 256-color + truecolor, wide/CJK cells,
 **bold/italic** (real font faces where the system provides them, synthetic
 shear/dilation otherwise), **underline/strikethrough**, **inline images** (Sixel
-and Kitty raw RGBA drawn directly; iTerm2 and Kitty PNG decoded via the `png`
-crate), mouse-wheel scrollback, resize, a rounded-corner-safe inset. Follow-ups
-toward full parity: non-PNG encoded images (JPEG/GIF/WebP), color emoji (a richer
-text stack — swash/cosmic-text), selection + clipboard, hyperlinks, cursor blink,
-and tabs/splits.
+and Kitty raw RGBA drawn directly; iTerm2 and Kitty encoded images —
+PNG/JPEG/GIF/BMP/WebP — decoded via the `image` crate), mouse-wheel scrollback,
+resize, a rounded-corner-safe inset. Follow-ups toward full parity: color emoji
+(a richer text stack — swash/cosmic-text), selection + clipboard, hyperlinks,
+cursor blink, and tabs/splits.
 
 ## Benchmarks
 

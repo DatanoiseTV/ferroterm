@@ -26,43 +26,27 @@ pub struct ImageQuad<'a> {
 /// Uniform alignment for a dynamic offset (wgpu requires 256 by default).
 const SLOT: u64 = 256;
 
-/// Decode a PNG file to `(width, height, rgba)`. Used for encoded inline images
-/// (iTerm2, Kitty `f=100`) since the native app links no browser to decode them.
-/// Returns `None` for anything the `png` crate can't read (other formats —
-/// JPEG/GIF/WebP — are a follow-up). Bounds the output to guard a hostile size.
-pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let mut dec = png::Decoder::new(bytes);
-    // Expand palettes / low-bit grayscale to full channels and 16-bit to 8-bit,
-    // so the decoded frame is one of the 8-bit color types handled below.
-    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = dec.read_info().ok()?;
-    let info = reader.info();
-    let (w, h) = (info.width, info.height);
-    if w == 0 || h == 0 || (w as u64) * (h as u64) > 64 * 1024 * 1024 {
+/// Decode an encoded image (PNG / JPEG / GIF / BMP / WebP) to `(width, height,
+/// rgba8)`. Used for encoded inline images (iTerm2, Kitty `f=100`) since the
+/// native app links no browser to decode them. Returns `None` if the format is
+/// unrecognized or the image exceeds the guard limits (a decompression bomb).
+pub fn decode_image(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    // Bound dimensions and total allocation before decoding.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+
+    let img = reader.decode().ok()?;
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
         return None;
     }
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    let frame = reader.next_frame(&mut buf).ok()?;
-    buf.truncate(frame.buffer_size());
-    let rgba = match frame.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => buf
-            .chunks_exact(3)
-            .flat_map(|p| [p[0], p[1], p[2], 0xff])
-            .collect(),
-        png::ColorType::Grayscale => buf.iter().flat_map(|&v| [v, v, v, 0xff]).collect(),
-        png::ColorType::GrayscaleAlpha => buf
-            .chunks_exact(2)
-            .flat_map(|p| [p[0], p[0], p[0], p[1]])
-            .collect(),
-        // Indexed is expanded by the decoder when the transform is set; without
-        // it we can't map palette indices to colors here, so decline.
-        png::ColorType::Indexed => return None,
-    };
-    if rgba.len() < (w * h * 4) as usize {
-        return None;
-    }
-    Some((w, h, rgba))
+    Some((w, h, img.to_rgba8().into_raw()))
 }
 
 struct Tex {

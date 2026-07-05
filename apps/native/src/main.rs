@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use ferroterm_core::Terminal;
 use ferroterm_native::atlas::Atlas;
-use ferroterm_native::images::{decode_png, ImageLayer, ImageQuad};
+use ferroterm_native::images::{decode_image, ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
 use ferroterm_native::snapshot::Grid;
@@ -53,9 +53,10 @@ struct State {
     /// Kept in sync with the renderer so inline images align with the text.
     origin_x: f32,
     origin_y: f32,
-    /// Decoded encoded images (iTerm2 / Kitty PNG) by image id → (w, h, rgba),
-    /// so a PNG is decoded once and not on every frame.
-    decoded: HashMap<u32, (u32, u32, Vec<u8>)>,
+    /// Decoded encoded images by image id → `Some((w, h, rgba))`, or `None` if
+    /// the bytes couldn't be decoded — cached either way so a given image is
+    /// decoded (or rejected) once, not on every frame.
+    decoded: HashMap<u32, Option<(u32, u32, Vec<u8>)>>,
 }
 
 /// One image resolved for this frame: id, source (texture) size, on-screen
@@ -270,17 +271,14 @@ impl State {
                 });
                 continue;
             }
-            // Encoded image: decode PNG (only format we handle natively yet).
-            if self.term.image_mime(id) != "image/png" {
-                continue;
-            }
+            // Encoded image (iTerm2 / Kitty f=100): decode it natively. Any
+            // format the `image` crate understands works, regardless of the
+            // core's MIME hint; a decode failure just leaves it unshown.
             if !self.decoded.contains_key(&id) {
                 let enc = self.term.image_encoded(id);
-                if let Some(dec) = decode_png(&enc) {
-                    self.decoded.insert(id, dec);
-                }
+                self.decoded.insert(id, decode_image(&enc));
             }
-            if let Some((dw, dh, drgba)) = self.decoded.get(&id) {
+            if let Some(Some((dw, dh, drgba))) = self.decoded.get(&id) {
                 frames.push(ImgFrame {
                     id,
                     sw: *dw,
