@@ -5,7 +5,7 @@
 //   node test/run.mjs            (from the web/ directory)
 //   CHROME_BIN=/path/to/chrome node test/run.mjs
 //
-// Requires Node 18+ (global fetch/WebSocket) and a Chrome/Chromium build.
+// Requires Node 22+ (global fetch + WebSocket) and a Chrome/Chromium build.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';

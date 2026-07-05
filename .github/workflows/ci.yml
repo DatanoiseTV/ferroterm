@@ -30,7 +30,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22 # test/run.mjs uses the global WebSocket (Node >= 22)
       - name: Install wasm-bindgen-cli
         run: cargo install wasm-bindgen-cli --version 0.2.122 --locked
       - name: Build wasm package
