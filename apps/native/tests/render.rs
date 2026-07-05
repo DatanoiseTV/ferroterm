@@ -250,3 +250,62 @@ fn underline_and_strikethrough_draw_lines() {
     }
     assert_eq!(failed, 0, "{failed} decoration check(s) failed");
 }
+
+#[test]
+fn bold_and_italic_rasterize_differently() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(24.0); // larger cell → clearer style differences
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (3usize, 1usize);
+
+    let mut term = Terminal::new(cols, rows, 100);
+    // The same glyph in three styles: regular, bold (SGR 1), italic (SGR 3).
+    term.feed("R\x1b[1mR\x1b[0m\x1b[3mR\x1b[0m".as_bytes());
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+    let px = render_readback(&device, &queue, &mut r, &mut atlas, &pal, &grid, w, h);
+
+    // Collect one cell's RGB block and count its lit (non-background) pixels.
+    let bg = (0x1a, 0x1b, 0x26);
+    let cell = |cx: usize| -> (Vec<u8>, usize) {
+        let mut bytes = Vec::with_capacity((cw * ch * 3) as usize);
+        let mut lit = 0usize;
+        for yy in 0..ch {
+            for xx in 0..cw {
+                let o = (((yy) * w + (cx as u32 * cw + xx)) * 4) as usize;
+                let (rr, gg, bb) = (px[o], px[o + 1], px[o + 2]);
+                bytes.extend_from_slice(&[rr, gg, bb]);
+                let d =
+                    (rr as i32 - bg.0).abs() + (gg as i32 - bg.1).abs() + (bb as i32 - bg.2).abs();
+                if d > 60 {
+                    lit += 1;
+                }
+            }
+        }
+        (bytes, lit)
+    };
+    let (reg, reg_lit) = cell(0);
+    let (bold, bold_lit) = cell(1);
+    let (ital, ital_lit) = cell(2);
+
+    eprintln!("  lit px — regular {reg_lit}, bold {bold_lit}, italic {ital_lit}");
+    assert!(reg_lit > 0, "regular glyph rendered nothing");
+    assert_ne!(reg, bold, "bold cell must differ from regular");
+    assert_ne!(reg, ital, "italic cell must differ from regular");
+    assert_ne!(bold, ital, "bold and italic must differ from each other");
+    // Bold is heavier: at least as many lit pixels as regular.
+    assert!(
+        bold_lit >= reg_lit,
+        "bold ({bold_lit}) should not be lighter than regular ({reg_lit})"
+    );
+}

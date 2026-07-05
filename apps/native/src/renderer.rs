@@ -314,6 +314,7 @@ pub fn build_instances(
             let inverse = flags & attr::INVERSE != 0;
             let bold = flags & attr::BOLD != 0;
             let wide = flags & attr::WIDE != 0;
+            let style = (bold as u8) | (((flags & attr::ITALIC != 0) as u8) << 1);
             let has_glyph = c.cp != 0x20 && c.cp != 0 && flags & attr::INVISIBLE == 0;
             let has_deco = flags & (attr::UNDERLINE | attr::STRIKETHROUGH) != 0;
 
@@ -347,7 +348,7 @@ pub fn build_instances(
             // decoration draws over the cleared bg rather than a solid box.
             if has_glyph || bg_a != 0 {
                 let uv = if has_glyph {
-                    let g = atlas.glyph(c.cp, wide);
+                    let g = atlas.glyph(c.cp, wide, style);
                     [g.u0, g.v0, g.u1, g.v1]
                 } else {
                     [-1.0, -1.0, -1.0, -1.0]
@@ -390,10 +391,12 @@ pub fn build_instances(
         let (x, y) = (grid.cursor_x, grid.cursor_y);
         let c = grid.cell(x, y);
         let wide = c.flags & attr::WIDE != 0;
+        let style =
+            ((c.flags & attr::BOLD != 0) as u8) | (((c.flags & attr::ITALIC != 0) as u8) << 1);
         let w = if wide { cw * 2.0 } else { cw };
         let has_glyph = c.cp != 0x20 && c.cp != 0;
         let uv = if has_glyph {
-            let g = atlas.glyph(c.cp, wide);
+            let g = atlas.glyph(c.cp, wide, style);
             [g.u0, g.v0, g.u1, g.v1]
         } else {
             [-1.0, -1.0, -1.0, -1.0]

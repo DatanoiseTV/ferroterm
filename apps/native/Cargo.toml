@@ -20,6 +20,7 @@ wgpu = "22"
 pollster = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 fontdue = "0.9"
+ttf-parser = "0.24"
 portable-pty = "0.8"
 
 [dev-dependencies]

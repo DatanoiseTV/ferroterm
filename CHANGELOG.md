@@ -16,6 +16,15 @@ the web renderer:
   of the cell), thickness scaled to the cell. Underlined blank cells now draw the
   line even with a transparent background. Verified by a headless offscreen
   render asserting exact line colors at the expected rows.
+- **Bold, italic and bold-italic** glyphs in the native atlas. The atlas now
+  resolves four faces from the system font, classified by their style bits (via
+  `ttf-parser`) rather than hardcoded collection indices — so Menlo's real bold
+  and italic faces are used on macOS. A missing face degrades to a synthetic
+  transform of the regular face (a shear for italic, a one-pixel horizontal
+  dilation for bold) so styled text still reads distinctly. Glyphs are cached per
+  (codepoint, wide, style). Verified by a headless render asserting bold/italic
+  cells differ from regular and from each other, with bold no lighter than
+  regular.
 
 ## [0.7.0] - 2026-07-05
 

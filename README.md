@@ -187,11 +187,12 @@ cargo run --release --example bench   # headless renderer benchmark (real GPU)
 cargo test                   # headless render test (offscreen, pixel-asserted)
 ```
 
-Milestone 1 (working): shell I/O, keyboard, 256-color + truecolor, wide/CJK
-cells, mouse-wheel scrollback, resize, a rounded-corner-safe inset. Follow-ups
-toward full parity: bold/italic glyph shaping, color emoji (a richer text stack
-— swash/cosmic-text), selection + clipboard, inline images, hyperlinks, cursor
-blink, and tabs/splits.
+Working: shell I/O, keyboard, 256-color + truecolor, wide/CJK cells,
+**bold/italic** (real font faces where the system provides them, synthetic
+shear/dilation otherwise), **underline/strikethrough**, mouse-wheel scrollback,
+resize, a rounded-corner-safe inset. Follow-ups toward full parity: color emoji
+(a richer text stack — swash/cosmic-text), selection + clipboard, inline images,
+hyperlinks, cursor blink, and tabs/splits.
 
 ## Benchmarks
 
