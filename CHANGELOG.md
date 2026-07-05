@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-07-05
+
+### Added
+- **`Terminal::selection_text`** — flow text extraction for a selection given
+  absolute `(column, line)` endpoints (line 0 = oldest scrollback), so a
+  selection that spans scrollback history extracts correctly from the buffer
+  that holds it. Column-bounded on the first and last lines, whole lines
+  between, wide-glyph spacers skipped, trailing blanks trimmed, lines joined
+  with `\n`. Unit tested for the spanning, reversed-endpoint and single-line
+  cases. Consumed by the native app; not yet surfaced in the web component.
+
+## [native-0.9.0] - 2026-07-05
+
+### Added
+- **Selection across scrollback** in the native app. Selection endpoints are now
+  stored in absolute line coordinates (line 0 = oldest scrollback) rather than
+  viewport cells, so a selection stays put — and stays highlighted — as the
+  viewport scrolls, and it can span history. Dragging past the top or bottom edge
+  pages the viewport by a line so a drag extends into scrollback or toward the
+  present; mouse-wheel and Shift+PageUp/Down no longer clear the selection.
+  Cmd/Ctrl+A now selects the whole buffer (scrollback plus screen), and copy
+  pulls the text from the core buffer via `Terminal::selection_text`. A headless
+  render test scrolls into history and pixel-asserts that an absolute-addressed
+  selection highlights the correct viewport rows. The viewport-only
+  `selected_text` helper it replaces was removed.
+
+### Note
+- Edge auto-scroll advances on mouse movement; holding the pointer still past the
+  edge does not keep scrolling (no repeat timer yet).
+
 ## [native-0.8.0] - 2026-07-05
 
 ### Added

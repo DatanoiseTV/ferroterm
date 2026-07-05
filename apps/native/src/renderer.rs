@@ -241,9 +241,10 @@ impl Renderer {
         cursor_on: bool,
         clear: (u8, u8, u8),
         sel: Option<&Selection>,
+        sel_top: usize,
         hover_link: u32,
     ) {
-        let inst = build_instances(atlas, grid, pal, cursor_on, sel, hover_link);
+        let inst = build_instances(atlas, grid, pal, cursor_on, sel, sel_top, hover_link);
         if atlas.dirty {
             self.upload_atlas(queue, atlas);
             atlas.dirty = false;
@@ -300,6 +301,7 @@ pub fn build_instances(
     pal: &Palette,
     cursor_on: bool,
     sel: Option<&Selection>,
+    sel_top: usize,
     hover_link: u32,
 ) -> Vec<Instance> {
     let cw = atlas.cell_w as f32;
@@ -345,8 +347,11 @@ pub fn build_instances(
                 )
             };
             // Selected cells get the selection background (opaque), so even a
-            // blank cell inside the selection is highlighted.
-            let selected = sel.is_some_and(|s| !s.is_empty() && s.contains(x, y));
+            // blank cell inside the selection is highlighted. The selection is
+            // stored in absolute line coordinates; `sel_top` is the absolute line
+            // at the top of the current viewport, so this row's absolute line is
+            // `sel_top + y`.
+            let selected = sel.is_some_and(|s| !s.is_empty() && s.contains(x, sel_top + y));
             if selected {
                 bg_rgb = pal.theme.selection;
                 bg_a = 255;

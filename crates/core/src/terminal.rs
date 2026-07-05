@@ -283,21 +283,67 @@ impl Terminal {
         self.scrollback.len() + self.rows()
     }
 
-    /// Text of logical line `abs` (0 = oldest scrollback line). Wide-glyph
-    /// spacer cells are skipped so the string reads naturally.
-    pub fn line_text(&self, abs: usize) -> String {
+    /// A borrow of logical line `abs` (0 = oldest scrollback line), clamped into
+    /// the active screen for indices past the end.
+    fn line_at(&self, abs: usize) -> &Line {
         let back = self.scrollback.len();
-        let line = if abs < back {
+        if abs < back {
             &self.scrollback[abs]
         } else {
             self.buf().line((abs - back).min(self.rows() - 1))
-        };
-        line.iter()
+        }
+    }
+
+    /// Text of logical line `abs` (0 = oldest scrollback line). Wide-glyph
+    /// spacer cells are skipped so the string reads naturally.
+    pub fn line_text(&self, abs: usize) -> String {
+        self.line_at(abs)
+            .iter()
             .filter(|c| !c.pen.has(attr::WIDE_SPACER))
             .map(|c| c.ch)
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    /// Extract the text of a flow selection given absolute `(col, line)`
+    /// endpoints (line 0 = oldest scrollback). The endpoints are normalized to
+    /// reading order; the first line is taken from its start column, the last up
+    /// to its end column, and whole lines are taken in between. Wide-glyph spacer
+    /// cells are skipped, trailing blanks are trimmed per line, and lines are
+    /// joined with `\n`. Because it reads the scrollback buffer directly, the
+    /// selection may span history rather than just the visible screen.
+    pub fn selection_text(&self, a: (usize, usize), b: (usize, usize)) -> String {
+        // Normalize so `s` is at or before `e` in reading (row-major) order.
+        let (s, e) = if (a.1, a.0) <= (b.1, b.0) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let (sx, sy) = s;
+        let (ex, ey) = e;
+        let last = self.total_lines().saturating_sub(1);
+        let mut lines = Vec::new();
+        for abs in sy..=ey.min(last) {
+            let x0 = if abs == sy { sx } else { 0 };
+            let x1 = if abs == ey { ex } else { usize::MAX };
+            let line = self.line_at(abs);
+            let hi = x1.min(line.len().saturating_sub(1));
+            let mut out = String::new();
+            let mut x = x0;
+            while x <= hi {
+                let cell = &line[x];
+                if !cell.pen.has(attr::WIDE_SPACER) {
+                    out.push(cell.ch);
+                }
+                x += 1;
+            }
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            lines.push(out);
+        }
+        lines.join("\n")
     }
 
     /// Scroll the viewport so logical line `abs` is at the top.

@@ -1,10 +1,11 @@
-//! Text selection over the visible grid: a normalized inclusive cell range, a
-//! containment test for highlighting, and flow-style text extraction for copy.
+//! Text selection: a normalized inclusive range, a containment test for
+//! highlighting, and word-range detection for double-click.
 //!
-//! Coordinates are viewport cells (column, row). Selection currently covers only
-//! what is on screen; extending it across scrollback is a follow-up.
-
-use ferroterm_core::attr;
+//! Endpoints are `(column, line)`. The app stores them in absolute line
+//! coordinates (line 0 = oldest scrollback) so a selection survives scrolling
+//! and can span history; text extraction for those coordinates lives in the core
+//! terminal (`Terminal::selection_text`), which holds the scrollback buffer.
+//! `word_range` operates on the visible grid, where the row is a viewport row.
 
 use crate::snapshot::Grid;
 
@@ -87,46 +88,6 @@ pub fn word_range(grid: &Grid, x: usize, y: usize) -> (usize, usize) {
         hi += 1;
     }
     (lo, hi)
-}
-
-/// Extract the selected text as a flow (first row from the start column to the
-/// row end, full middle rows, last row up to the end column), with trailing
-/// blanks trimmed per line and rows joined by `\n`.
-pub fn selected_text(grid: &Grid, sel: &Selection) -> String {
-    let (sx, sy) = sel.start;
-    let (ex, ey) = sel.end;
-    let mut lines = Vec::new();
-    for y in sy..=ey.min(grid.rows.saturating_sub(1)) {
-        let x0 = if y == sy { sx } else { 0 };
-        let x1 = if y == ey {
-            ex
-        } else {
-            grid.cols.saturating_sub(1)
-        };
-        let mut line = String::new();
-        let mut x = x0;
-        while x <= x1 && x < grid.cols {
-            let c = grid.cell(x, y);
-            // Skip the trailing half of a wide character (its glyph is on the
-            // preceding cell).
-            if c.flags & attr::WIDE_SPACER != 0 {
-                x += 1;
-                continue;
-            }
-            let ch = if c.cp == 0 {
-                ' '
-            } else {
-                char::from_u32(c.cp).unwrap_or(' ')
-            };
-            line.push(ch);
-            x += 1;
-        }
-        while line.ends_with(' ') {
-            line.pop();
-        }
-        lines.push(line);
-    }
-    lines.join("\n")
 }
 
 #[cfg(test)]

@@ -113,6 +113,7 @@ fn render_readback(
         pal.theme.bg,
         None,
         0,
+        0,
     );
 
     // Copy to a buffer with a 256-aligned row stride, then repack tightly.
@@ -466,6 +467,7 @@ fn inline_rgba_image_draws_over_cells() {
         pal.theme.bg,
         None,
         0,
+        0,
     );
 
     let mut layer = ImageLayer::new(&device, FMT);
@@ -563,6 +565,7 @@ fn kitty_image_renders_end_to_end() {
         false,
         pal.theme.bg,
         None,
+        0,
         0,
     );
 
@@ -707,6 +710,7 @@ fn kitty_png_image_decodes_and_renders() {
         pal.theme.bg,
         None,
         0,
+        0,
     );
 
     // Mirror main.rs: decode the encoded PNG, scale it into the placement box.
@@ -792,6 +796,7 @@ fn selection_highlights_selected_cells() {
         pal.theme.bg,
         Some(&sel),
         0,
+        0,
     );
 
     let px = readback(&device, &queue, &tex, w, h);
@@ -815,6 +820,95 @@ fn selection_highlights_selected_cells() {
     assert!(near(corner(0), bg), "col0 is outside the selection → bg");
     assert!(near(corner(2), seln), "col2 is selected → selection bg");
     assert!(near(corner(5), bg), "col5 is outside the selection → bg");
+}
+
+#[test]
+fn selection_highlights_across_scrollback() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (6usize, 2usize);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+
+    // Six lines into a two-row screen leaves four lines in scrollback.
+    let mut term = Terminal::new(cols, rows, 100);
+    term.feed(b"111111\r\n222222\r\n333333\r\n444444\r\n555555\r\n666666");
+    // Scroll up into history so the viewport no longer starts at line 0.
+    term.scroll_up_view(2);
+    assert!(term.display_offset() > 0, "expected a scrolled viewport");
+    let sel_top = term.scrollback_len() - term.display_offset();
+
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FMT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Select columns 1..=3 of the top visible line, addressed by ABSOLUTE line.
+    // With sel_top applied, only viewport row 0 (that absolute line) highlights.
+    let sel = Selection::new((1, sel_top), (3, sel_top));
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    r.set_screen(&queue, w as f32, h as f32, 0.0, 0.0);
+    r.render(
+        &device,
+        &queue,
+        &view,
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+        Some(&sel),
+        sel_top,
+        0,
+    );
+
+    let px = readback(&device, &queue, &tex, w, h);
+    // Top-left corner pixel of cell (cx, row) — glyph-free, so it reads the bg.
+    let corner = |cx: usize, row: usize| -> [u8; 3] {
+        let o = (((row as u32 * ch + 1) * w + (cx as u32 * cw + 1)) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2]]
+    };
+    let near = |got: [u8; 3], exp: (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        d(got[0], exp.0) <= 8 && d(got[1], exp.1) <= 8 && d(got[2], exp.2) <= 8
+    };
+    let seln = pal.theme.selection;
+    let bg = (0x1a, 0x1b, 0x26);
+    eprintln!(
+        "  top: c0 {:?} c2 {:?} c5 {:?} | bottom c2 {:?}",
+        corner(0, 0),
+        corner(2, 0),
+        corner(5, 0),
+        corner(2, 1)
+    );
+    assert!(near(corner(0, 0), bg), "top col0 outside selection → bg");
+    assert!(near(corner(2, 0), seln), "top col2 selected → selection bg");
+    assert!(near(corner(5, 0), bg), "top col5 outside selection → bg");
+    assert!(
+        near(corner(2, 1), bg),
+        "bottom row is a different absolute line → not highlighted"
+    );
 }
 
 #[test]
@@ -874,6 +968,7 @@ fn cursor_visibility_follows_the_flag() {
         pal.theme.bg,
         None,
         0,
+        0,
     );
     let on_px = readback(&device, &queue, &on, w, h);
 
@@ -889,6 +984,7 @@ fn cursor_visibility_follows_the_flag() {
         false,
         pal.theme.bg,
         None,
+        0,
         0,
     );
     let off_px = readback(&device, &queue, &off, w, h);
@@ -971,6 +1067,7 @@ fn hovered_hyperlink_is_underlined() {
         false,
         pal.theme.bg,
         None,
+        0,
         link_id,
     );
     let hov_px = readback(&device, &queue, &hov, w, h);
@@ -986,6 +1083,7 @@ fn hovered_hyperlink_is_underlined() {
         false,
         pal.theme.bg,
         None,
+        0,
         0,
     );
     let plain_px = readback(&device, &queue, &plain, w, h);

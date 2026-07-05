@@ -16,7 +16,7 @@ use ferroterm_native::atlas::Atlas;
 use ferroterm_native::images::{decode_image, ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
-use ferroterm_native::selection::{selected_text, word_range, Selection};
+use ferroterm_native::selection::{word_range, Selection};
 use ferroterm_native::snapshot::Grid;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -67,9 +67,12 @@ struct State {
 
     /// Last known cursor position in device pixels (for hit-testing to a cell).
     cursor_px: (f64, f64),
-    /// Active text selection (viewport cells), if any.
+    /// Active text selection, if any. Endpoints are `(column, absolute line)`
+    /// where line 0 is the oldest scrollback line, so the selection survives
+    /// scrolling and can span history rather than just the visible viewport.
     selection: Option<Selection>,
-    /// Mouse-drag selection anchor cell, set on press while dragging.
+    /// Mouse-drag selection anchor in `(column, absolute line)`, set on press
+    /// while dragging.
     sel_anchor: Option<(usize, usize)>,
     /// Last mouse press (time, cell, click count) for double/triple detection.
     last_click: Option<(Instant, usize, usize, u32)>,
@@ -278,10 +281,26 @@ impl State {
         (x, y)
     }
 
+    /// Absolute line index of the top visible row (0 = oldest scrollback line).
+    /// The selection is stored in absolute coordinates so it stays put as the
+    /// viewport scrolls.
+    fn viewport_top_abs(&self) -> usize {
+        self.term
+            .scrollback_len()
+            .saturating_sub(self.term.display_offset())
+    }
+
+    /// Map a viewport cell `(col, row)` to an absolute `(col, line)`.
+    fn cell_to_abs(&self, cell: (usize, usize)) -> (usize, usize) {
+        (cell.0, self.viewport_top_abs() + cell.1)
+    }
+
     /// Copy the current selection to the system clipboard.
     fn copy_selection(&mut self) {
         let Some(sel) = self.selection else { return };
-        let text = selected_text(&self.grid, &sel);
+        // Extraction spans scrollback, so it comes from the core buffer (which
+        // holds history) rather than the viewport-only render grid.
+        let text = self.term.selection_text(sel.start, sel.end);
         if text.is_empty() {
             return;
         }
@@ -293,9 +312,13 @@ impl State {
         }
     }
 
-    /// Select the whole visible viewport (Cmd/Ctrl+A).
+    /// Select the whole buffer — all scrollback history plus the screen
+    /// (Cmd/Ctrl+A).
     fn select_all(&mut self) {
-        let last = (self.cols.saturating_sub(1), self.rows.saturating_sub(1));
+        let last = (
+            self.cols.saturating_sub(1),
+            self.term.total_lines().saturating_sub(1),
+        );
         self.selection = Some(Selection::new((0, 0), last));
         self.sel_anchor = None;
     }
@@ -374,6 +397,7 @@ impl State {
             .create_view(&wgpu::TextureViewDescriptor::default());
         // The cursor is solid while unfocused, and blinks while focused.
         let cursor_on = !self.focused || self.blink_on;
+        let sel_top = self.viewport_top_abs();
         self.renderer.render(
             &self.device,
             &self.queue,
@@ -384,6 +408,7 @@ impl State {
             cursor_on,
             self.palette.theme.bg,
             self.selection.as_ref(),
+            sel_top,
             self.hover_link,
         );
 
@@ -534,9 +559,8 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 let n = lines.abs().round() as usize;
                 if n > 0 {
-                    // Scrolling invalidates the viewport-anchored selection.
-                    state.selection = None;
-                    state.sel_anchor = None;
+                    // The selection is anchored in absolute lines, so it stays
+                    // valid across scrolling — no need to clear it here.
                     if lines > 0.0 {
                         state.term.scroll_up_view(n);
                     } else {
@@ -548,8 +572,20 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor_px = (position.x, position.y);
                 if let Some(anchor) = state.sel_anchor {
+                    // Dragging past the top/bottom edge pages the viewport by a
+                    // line so the selection can extend into scrollback (up) or
+                    // toward the present (down). The absolute anchor is unchanged;
+                    // only the focus end and the viewport move.
+                    let top_edge = state.origin_y as f64;
+                    let bot_edge = top_edge + state.rows as f64 * state.atlas.cell_h as f64;
+                    if position.y < top_edge {
+                        state.term.scroll_up_view(1);
+                    } else if position.y >= bot_edge {
+                        state.term.scroll_down_view(1);
+                    }
                     let cell = state.px_to_cell(position.x, position.y);
-                    let sel = Selection::new(anchor, cell);
+                    let focus = state.cell_to_abs(cell);
+                    let sel = Selection::new(anchor, focus);
                     state.selection = (!sel.is_empty()).then_some(sel);
                     state.window.request_redraw();
                 } else {
@@ -577,6 +613,7 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         let (px, py) = state.cursor_px;
                         let cell = state.px_to_cell(px, py);
+                        let abs = state.cell_to_abs(cell);
                         // Shift-click extends the existing selection from its far
                         // anchor to the clicked cell instead of starting a new one.
                         if state.mods.shift_key() {
@@ -584,8 +621,8 @@ impl ApplicationHandler<UserEvent> for App {
                                 .selection
                                 .map(|s| s.start)
                                 .or(state.sel_anchor)
-                                .unwrap_or(cell);
-                            let sel = Selection::new(anchor, cell);
+                                .unwrap_or(abs);
+                            let sel = Selection::new(anchor, abs);
                             state.selection = (!sel.is_empty()).then_some(sel);
                             state.sel_anchor = Some(anchor);
                             state.last_click = None;
@@ -608,15 +645,18 @@ impl ApplicationHandler<UserEvent> for App {
                         state.last_click = Some((now, cell.0, cell.1, count));
                         state.selection = None;
                         state.sel_anchor = None;
+                        // Word/line ranges come from the visible grid (columns are
+                        // the same in absolute space); the line is the row's
+                        // absolute index so the selection survives scrolling.
                         match count {
-                            1 => state.sel_anchor = Some(cell),
+                            1 => state.sel_anchor = Some(abs),
                             2 => {
                                 let (lo, hi) = word_range(&state.grid, cell.0, cell.1);
-                                state.selection = Some(Selection::new((lo, cell.1), (hi, cell.1)));
+                                state.selection = Some(Selection::new((lo, abs.1), (hi, abs.1)));
                             }
                             _ => {
                                 let last = state.cols.saturating_sub(1);
-                                state.selection = Some(Selection::new((0, cell.1), (last, cell.1)));
+                                state.selection = Some(Selection::new((0, abs.1), (last, abs.1)));
                             }
                         }
                         state.window.request_redraw();
@@ -665,8 +705,8 @@ impl ApplicationHandler<UserEvent> for App {
                             _ => false,
                         };
                         if scrolled {
-                            state.selection = None;
-                            state.sel_anchor = None;
+                            // The selection is absolute-anchored; paging leaves it
+                            // valid, so keep it and just redraw at the new offset.
                             state.window.request_redraw();
                             return;
                         }

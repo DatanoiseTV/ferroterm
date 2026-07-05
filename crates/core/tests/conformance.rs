@@ -334,6 +334,23 @@ fn line_text_reads_scrollback() {
 }
 
 #[test]
+fn selection_text_spans_scrollback() {
+    let mut t = term();
+    for i in 0..10 {
+        t.feed(format!("row{}\r\n", i).as_bytes());
+    }
+    // "row0" occupies cols 0..=3 ('r','o','w','0'); lines 0..2 are in scrollback.
+    // Select (col 1, line 0) .. (col 2, line 2): tail of row0, whole row1, head
+    // of row2. First-line start column and last-line end column are honored.
+    let s = t.selection_text((1, 0), (2, 2));
+    assert_eq!(s, "ow0\nrow1\nrow");
+    // Reversed endpoints normalize to the same reading-order result.
+    assert_eq!(t.selection_text((2, 2), (1, 0)), "ow0\nrow1\nrow");
+    // A single-line selection is column-bounded and trailing-trimmed.
+    assert_eq!(t.selection_text((0, 3), (19, 3)), "row3");
+}
+
+#[test]
 fn malicious_long_params_do_not_panic() {
     let mut t = term();
     let mut s = b"\x1b[".to_vec();
