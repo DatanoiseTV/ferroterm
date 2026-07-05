@@ -1,6 +1,6 @@
 [package]
 name = "ferroterm-native"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 description = "Native GPU terminal built on ferroterm-core (winit + wgpu), no webview."

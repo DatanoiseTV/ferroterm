@@ -51,6 +51,44 @@ impl Selection {
     }
 }
 
+/// Character class for word selection: word characters (identifiers and common
+/// URL/path punctuation) group together, whitespace groups, and everything else
+/// is treated individually-but-grouped as "other".
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Class {
+    Word,
+    Space,
+    Other,
+}
+
+fn class_of(cp: u32) -> Class {
+    match char::from_u32(cp) {
+        None => Class::Space,
+        Some(c) if c == ' ' || c == '\0' => Class::Space,
+        Some(c) if c.is_alphanumeric() || "_-./~:@%+".contains(c) => Class::Word,
+        Some(_) => Class::Other,
+    }
+}
+
+/// The inclusive column range of the "word" (same character class) around
+/// `(x, y)` — for double-click selection.
+pub fn word_range(grid: &Grid, x: usize, y: usize) -> (usize, usize) {
+    if x >= grid.cols || y >= grid.rows {
+        return (x, x);
+    }
+    let class = |cx: usize| class_of(grid.cell(cx, y).cp);
+    let here = class(x);
+    let mut lo = x;
+    while lo > 0 && class(lo - 1) == here {
+        lo -= 1;
+    }
+    let mut hi = x;
+    while hi + 1 < grid.cols && class(hi + 1) == here {
+        hi += 1;
+    }
+    (lo, hi)
+}
+
 /// Extract the selected text as a flow (first row from the start column to the
 /// row end, full middle rows, last row up to the end column), with trailing
 /// blanks trimmed per line and rows joined by `\n`.

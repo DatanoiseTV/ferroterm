@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [native-0.7.0] - 2026-07-05
+
+### Added
+- **Double-click word and triple-click line selection** in the native app.
+  Consecutive clicks on the same cell within 400 ms cycle single (drag) → double
+  (select the word) → triple (select the whole line). Word boundaries group
+  identifier characters plus common URL/path punctuation (`_-./~:@%+`), so a URL
+  selects as one token. New `word_range` helper in the selection module, unit
+  tested (including a URL token).
+
 ## [native-0.6.0] - 2026-07-05
 
 ### Added

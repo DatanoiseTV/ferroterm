@@ -16,7 +16,7 @@ use ferroterm_native::atlas::Atlas;
 use ferroterm_native::images::{decode_image, ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
-use ferroterm_native::selection::{selected_text, Selection};
+use ferroterm_native::selection::{selected_text, word_range, Selection};
 use ferroterm_native::snapshot::Grid;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -33,6 +33,8 @@ pub enum UserEvent {
 
 /// Cursor blink half-period (on for this long, then off for this long).
 const BLINK: Duration = Duration::from_millis(530);
+/// Max gap between clicks to count as a double/triple click.
+const MULTICLICK: Duration = Duration::from_millis(400);
 
 struct State {
     window: Arc<Window>,
@@ -69,6 +71,8 @@ struct State {
     selection: Option<Selection>,
     /// Mouse-drag selection anchor cell, set on press while dragging.
     sel_anchor: Option<(usize, usize)>,
+    /// Last mouse press (time, cell, click count) for double/triple detection.
+    last_click: Option<(Instant, usize, usize, u32)>,
     /// System clipboard, created lazily on first copy/paste.
     clipboard: Option<arboard::Clipboard>,
     /// OSC 8 hyperlink id under the mouse (0 = none), for hover underline.
@@ -202,6 +206,7 @@ impl State {
             cursor_px: (0.0, 0.0),
             selection: None,
             sel_anchor: None,
+            last_click: None,
             clipboard: None,
             hover_link: 0,
             focused: true,
@@ -564,10 +569,35 @@ impl ApplicationHandler<UserEvent> for App {
                             return;
                         }
                         let (px, py) = state.cursor_px;
-                        state.sel_anchor = Some(state.px_to_cell(px, py));
-                        if state.selection.take().is_some() {
-                            state.window.request_redraw();
+                        let cell = state.px_to_cell(px, py);
+                        // Count consecutive clicks on the same cell: 1=drag,
+                        // 2=word, 3=line (then cycles).
+                        let now = Instant::now();
+                        let count = match state.last_click {
+                            Some((t, cx, cy, n))
+                                if cx == cell.0
+                                    && cy == cell.1
+                                    && now.duration_since(t) < MULTICLICK =>
+                            {
+                                (n % 3) + 1
+                            }
+                            _ => 1,
+                        };
+                        state.last_click = Some((now, cell.0, cell.1, count));
+                        state.selection = None;
+                        state.sel_anchor = None;
+                        match count {
+                            1 => state.sel_anchor = Some(cell),
+                            2 => {
+                                let (lo, hi) = word_range(&state.grid, cell.0, cell.1);
+                                state.selection = Some(Selection::new((lo, cell.1), (hi, cell.1)));
+                            }
+                            _ => {
+                                let last = state.cols.saturating_sub(1);
+                                state.selection = Some(Selection::new((0, cell.1), (last, cell.1)));
+                            }
                         }
+                        state.window.request_redraw();
                     }
                     ElementState::Released => state.sel_anchor = None,
                 }
