@@ -48,9 +48,10 @@ and captures input.
   keeps a persistent per-cell GPU buffer and re-uploads only the rows that
   changed, drawing the whole grid in one instanced call (one instance per cell,
   background and glyph composited in the shader) with cursor and decorations in a
-  small overlay pass. A one-row edit repaints ~18× cheaper than a full frame, a
-  cursor blink ~54×, pixel-identical to a full re-render. WebGL falls back to
-  Canvas2D when unavailable.
+  small overlay pass that visits only decorated rows. A one-row edit repaints a
+  fraction of a full frame (~35× cheaper at 200×50) and a cursor-blink frame is
+  essentially free (below a 100 µs timer's resolution), pixel-identical to a full
+  re-render. WebGL falls back to Canvas2D when unavailable.
 - **Reusable component**: `Ferroterm.create(el, opts)`, `onData` / `write`,
   theming, mouse/word/line selection, right-click menu, clipboard, bracketed
   paste, find, scrollback. Ships TypeScript types. No runtime dependencies.

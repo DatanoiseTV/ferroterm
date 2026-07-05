@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-07-05
+
+### Performance
+- **WebGL overlay pass no longer scans every cell.** The per-frame overlay
+  (cursor, underline/strike decorations, hover-link) previously walked the whole
+  grid every frame to find the rare decorated cell — an `O(rows×cols)` scan even
+  for a cursor-blink frame that changes nothing. The renderer now tracks which
+  rows contain a decoration (updated as rows are regenerated) and the overlay
+  pass visits only decorated or hovered rows. Measured at 200×50 under software
+  GL: a one-row typing frame drops from 0.010 ms to 0.005 ms (2×) and a
+  cursor-blink frame falls below the 100 µs timer resolution; full-frame cost is
+  unchanged. Output is pixel-identical (verified by the incremental-parity test,
+  which exercises underline and strike). The benchmark page (`examples/
+  benchmark.html`) gained `?cols=&rows=` to profile at arbitrary grid sizes.
+
 ## [0.6.0] - 2026-07-05
 
 ### Added

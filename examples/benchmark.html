@@ -102,8 +102,13 @@
           : '');
     }
 
+    const q = new URLSearchParams(location.search);
+    const fixedGrid = q.has('cols') || q.has('rows');
     const term = await Ferroterm.create($('term'), {
-      renderer: 'webgl', fontSize: 14, cols: 100, rows: 32,
+      renderer: 'webgl', fontSize: 14,
+      cols: parseInt(q.get('cols')) || 100,
+      rows: parseInt(q.get('rows')) || 32,
+      autoFit: !fixedGrid, // an explicit grid size must not be re-fit to the container
     });
     window.__bench = { term, gpu };
 

@@ -92,7 +92,8 @@ both renderers *and* Sixel, iTerm2 images, reflow, palette, search and links
 built in, vs xterm.js's 68 KB core alone or ~95 KB with the webgl addon), and
 parses untrusted bytes in **memory-safe Rust**. It ships Canvas2D and WebGL out
 of the box, and the WebGL renderer repaints incrementally (only changed rows
-re-upload, ~18× cheaper for a one-row edit, ~54× for a cursor blink).
+re-upload, ~35× cheaper for a one-row edit; a cursor-blink frame is essentially
+free).
 
 xterm.js is **more mature**: a large addon ecosystem and years of production
 hardening in editors and IDEs. If you need a proven track record or a specific
