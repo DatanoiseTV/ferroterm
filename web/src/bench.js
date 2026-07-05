@@ -53,10 +53,10 @@ const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
  * Returns `[{ kind, best }]`. Restores the original renderer afterward.
  */
 export async function measureRenderers(term) {
-  const original = term.rendererName?.toLowerCase().includes('canvas') ? 'canvas' : 'webgl';
+  const original = term.rendererName || 'webgl';
   const content = fullScreenFrame(term.cols, term.rows, 0);
   const out = [];
-  for (const kind of ['canvas', 'webgl']) {
+  for (const kind of ['canvas', 'webgl', 'dom']) {
     term.setRenderer(kind);
     await nextFrame();
     term.write(content);

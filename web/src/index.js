@@ -4,4 +4,5 @@ export { FerroTermElement, defineFerroTermElement } from './element.js';
 export { GridModel } from './model.js';
 export { CanvasRenderer } from './renderer-canvas.js';
 export { WebGLRenderer } from './renderer-webgl.js';
+export { DomRenderer } from './renderer-dom.js';
 export { KEY } from './keycodes.js';

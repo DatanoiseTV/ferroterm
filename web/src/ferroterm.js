@@ -17,6 +17,7 @@ import { Palette, DEFAULT_THEME } from './palette.js';
 import { GridModel } from './model.js';
 import { CanvasRenderer } from './renderer-canvas.js';
 import { WebGLRenderer } from './renderer-webgl.js';
+import { DomRenderer } from './renderer-dom.js';
 import { KEY, modMask } from './keycodes.js';
 import { linkAt } from './links.js';
 
@@ -517,7 +518,8 @@ export class Ferroterm {
   }
 
   _makeRenderer(kind) {
-    const R = kind === 'canvas' ? CanvasRenderer : WebGLRenderer;
+    const R =
+      kind === 'canvas' ? CanvasRenderer : kind === 'dom' ? DomRenderer : WebGLRenderer;
     try {
       this.renderer = new R(this.container, this.metrics, this.palette);
     } catch (e) {
