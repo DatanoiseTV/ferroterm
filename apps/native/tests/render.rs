@@ -811,3 +811,93 @@ fn selection_highlights_selected_cells() {
     assert!(near(corner(2), seln), "col2 is selected → selection bg");
     assert!(near(corner(5), bg), "col5 is outside the selection → bg");
 }
+
+#[test]
+fn cursor_visibility_follows_the_flag() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (4usize, 1usize);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+
+    // Fresh terminal: cursor visible at (0,0) over an empty cell.
+    let mut term = Terminal::new(cols, rows, 100);
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    let make_tex = || {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FMT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    };
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    r.set_screen(&queue, w as f32, h as f32, 0.0, 0.0);
+
+    let corner_bg = |px: &[u8]| -> [u8; 3] {
+        let o = ((2 * w + 2) * 4) as usize; // near the top-left of cell (0,0)
+        [px[o], px[o + 1], px[o + 2]]
+    };
+
+    // Cursor ON: cell (0,0) shows the cursor color.
+    let on = make_tex();
+    r.render(
+        &device,
+        &queue,
+        &on.create_view(&Default::default()),
+        &grid,
+        &pal,
+        &mut atlas,
+        true,
+        pal.theme.bg,
+        None,
+    );
+    let on_px = readback(&device, &queue, &on, w, h);
+
+    // Cursor OFF: cell (0,0) shows the background.
+    let off = make_tex();
+    r.render(
+        &device,
+        &queue,
+        &off.create_view(&Default::default()),
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+        None,
+    );
+    let off_px = readback(&device, &queue, &off, w, h);
+
+    let near = |got: [u8; 3], exp: (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        d(got[0], exp.0) <= 8 && d(got[1], exp.1) <= 8 && d(got[2], exp.2) <= 8
+    };
+    let (a, b) = (corner_bg(&on_px), corner_bg(&off_px));
+    eprintln!("  cursor on {a:?} (want cursor), off {b:?} (want bg)");
+    assert!(
+        near(a, pal.theme.cursor),
+        "cursor-on cell should show the cursor color"
+    );
+    assert!(
+        near(b, (0x1a, 0x1b, 0x26)),
+        "cursor-off cell should show the background"
+    );
+}

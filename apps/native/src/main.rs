@@ -9,6 +9,7 @@ mod pty;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ferroterm_core::Terminal;
 use ferroterm_native::atlas::Atlas;
@@ -29,6 +30,9 @@ pub enum UserEvent {
     PtyData(Vec<u8>),
     PtyExit,
 }
+
+/// Cursor blink half-period (on for this long, then off for this long).
+const BLINK: Duration = Duration::from_millis(530);
 
 struct State {
     window: Arc<Window>,
@@ -67,6 +71,13 @@ struct State {
     sel_anchor: Option<(usize, usize)>,
     /// System clipboard, created lazily on first copy/paste.
     clipboard: Option<arboard::Clipboard>,
+
+    /// Whether the window is focused (cursor is solid, not blinking, unfocused).
+    focused: bool,
+    /// Current cursor blink phase (true = the block is shown this half-period).
+    blink_on: bool,
+    /// When the next blink toggle is due.
+    next_blink: Instant,
 }
 
 /// One image resolved for this frame: id, source (texture) size, on-screen
@@ -190,7 +201,17 @@ impl State {
             selection: None,
             sel_anchor: None,
             clipboard: None,
+            focused: true,
+            blink_on: true,
+            next_blink: Instant::now() + BLINK,
         }
+    }
+
+    /// Reset the cursor to solid and restart the blink timer — called on any
+    /// activity (keypress, output) so the cursor doesn't blink off mid-action.
+    fn poke_cursor(&mut self) {
+        self.blink_on = true;
+        self.next_blink = Instant::now() + BLINK;
     }
 
     /// Hit-test a device-pixel position to a viewport cell, clamped to the grid.
@@ -272,6 +293,7 @@ impl State {
         if !reply.is_empty() {
             self.pty.write(&reply);
         }
+        self.poke_cursor();
         self.window.request_redraw();
     }
 
@@ -288,6 +310,8 @@ impl State {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // The cursor is solid while unfocused, and blinks while focused.
+        let cursor_on = !self.focused || self.blink_on;
         self.renderer.render(
             &self.device,
             &self.queue,
@@ -295,7 +319,7 @@ impl State {
             &self.grid,
             &self.palette,
             &mut self.atlas,
-            true,
+            cursor_on,
             self.palette.theme.bg,
             self.selection.as_ref(),
         );
@@ -395,6 +419,34 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    /// Drive the cursor blink: when a scheduled toggle time is reached, flip the
+    /// blink phase and repaint.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        if let winit::event::StartCause::ResumeTimeReached { .. } = cause {
+            if state.focused && Instant::now() >= state.next_blink {
+                state.blink_on = !state.blink_on;
+                state.next_blink = Instant::now() + BLINK;
+                state.window.request_redraw();
+            }
+        }
+    }
+
+    /// Idle when unfocused; otherwise wake for the next cursor-blink toggle.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if state.focused {
+            event_loop
+                .set_control_flow(winit::event_loop::ControlFlow::WaitUntil(state.next_blink));
+        } else {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -405,6 +457,11 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => state.resize(size.width, size.height),
+            WindowEvent::Focused(f) => {
+                state.focused = f;
+                state.poke_cursor();
+                state.window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(m) => state.mods = m.state(),
             WindowEvent::RedrawRequested => state.render(),
             WindowEvent::MouseWheel { delta, .. } => {
@@ -480,6 +537,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if state.selection.take().is_some() {
                         state.window.request_redraw();
                     }
+                    state.poke_cursor();
                     state.term.scroll_to_bottom();
                     state.pty.write(&bytes);
                 }

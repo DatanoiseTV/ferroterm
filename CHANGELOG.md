@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [native-0.5.0] - 2026-07-05
+
+### Added
+- **Cursor blink** in the native app. The block cursor blinks on a 530 ms
+  half-period while the window is focused, driven by a `WaitUntil` control-flow
+  deadline (the loop stays idle between toggles rather than spinning). Any
+  activity — a keypress or PTY output — resets it solid so the cursor never
+  blinks off mid-action; it goes solid (non-blinking) while the window is
+  unfocused. A headless render test asserts the cursor cell shows the cursor
+  color when the flag is on and the background when off.
+
 ## [native-0.4.0] - 2026-07-05
 
 ### Added
