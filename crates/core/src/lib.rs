@@ -22,6 +22,7 @@ mod cell;
 mod grid;
 mod img;
 mod keys;
+mod kitty;
 mod palette;
 mod parser;
 mod reflow;

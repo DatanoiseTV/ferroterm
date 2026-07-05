@@ -136,6 +136,12 @@ pub struct Terminal {
     /// out and advance the cursor in whole cells using this.
     cell_px_w: usize,
     cell_px_h: usize,
+
+    /// Kitty graphics: base64 accumulated across a chunked transmission, paired
+    /// with the first chunk's control block (which carries format/action).
+    kitty_pending: Option<(crate::kitty::Cmd, Vec<u8>)>,
+    /// Kitty images transmitted but not displayed, awaiting a later `a=p`.
+    kitty_store: Vec<KittyImage>,
 }
 
 /// A placed inline image (Sixel, or an iTerm2 OSC 1337 `File=` image).
@@ -159,7 +165,32 @@ struct ImageRec {
     encoded: Vec<u8>,
     /// MIME hint for `encoded`; empty for the Sixel/RGBA path.
     mime: &'static str,
+    /// True for a Kitty-protocol placement (so `a=d` can target only Kitty
+    /// images and leave Sixel / iTerm2 ones alone).
+    from_kitty: bool,
+    /// Kitty client image id this placement came from (0 = none), so a Kitty
+    /// `a=d,d=i` delete can target one specific image.
+    kitty_id: u32,
 }
+
+/// A Kitty image transmitted but not (yet) displayed, kept so a later `a=p` can
+/// place it by id. `data` is already normalized: RGBA pixels for a raw format,
+/// or the original PNG file for `f=100`.
+#[derive(Clone)]
+struct KittyImage {
+    id: u32,
+    /// Normalized format: 32 (RGBA in `data`) or 100 (PNG in `data`).
+    format: u32,
+    /// Native pixel size (0 if unknown, e.g. an un-sniffable PNG).
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+/// Cap on the base64 accepted for a single (possibly chunked) Kitty image.
+const MAX_KITTY_B64: usize = 16 * 1024 * 1024;
+/// Cap on total bytes held in the transmit store (images awaiting `a=p`).
+const MAX_KITTY_STORE: usize = 32 * 1024 * 1024;
 
 impl Terminal {
     pub fn new(cols: usize, rows: usize, max_scrollback: usize) -> Self {
@@ -201,6 +232,8 @@ impl Terminal {
             scrolled_off: 0,
             cell_px_w: 8,
             cell_px_h: 16,
+            kitty_pending: None,
+            kitty_store: Vec::new(),
         }
     }
 
@@ -1061,6 +1094,8 @@ impl Terminal {
             self.images.clear();
             self.images_version = self.images_version.wrapping_add(1);
         }
+        self.kitty_pending = None;
+        self.kitty_store.clear();
         self.scrolled_off = 0;
     }
 
@@ -1137,6 +1172,8 @@ impl Terminal {
             rgba: img.rgba,
             encoded: Vec::new(),
             mime: "",
+            from_kitty: false,
+            kitty_id: 0,
         });
         self.images_version = self.images_version.wrapping_add(1);
         // Bound the number of live images.
@@ -1146,6 +1183,13 @@ impl Terminal {
 
         // Move the cursor to the start of the line just below the image,
         // scrolling as needed (sixel scrolling mode).
+        self.advance_below(rows_cells);
+    }
+
+    /// Move the cursor to the start of the line `rows_cells` below its current
+    /// row, scrolling the buffer as needed. Shared by every inline-image path so
+    /// the image occupies whole cell rows and text resumes underneath it.
+    fn advance_below(&mut self, rows_cells: usize) {
         for _ in 0..rows_cells {
             self.linefeed();
         }
@@ -1242,16 +1286,15 @@ impl Terminal {
             rgba: Vec::new(),
             encoded: bytes,
             mime,
+            from_kitty: false,
+            kitty_id: 0,
         });
         self.images_version = self.images_version.wrapping_add(1);
         if self.images.len() > 256 {
             self.images.remove(0);
         }
 
-        for _ in 0..rows_cells {
-            self.linefeed();
-        }
-        self.carriage_return();
+        self.advance_below(rows_cells);
     }
 
     /// Turn one iTerm2 width/height request into a pixel target, or `None` for
@@ -1266,6 +1309,232 @@ impl Terminal {
             Dim::Pixels(px) => Some(px as usize),
             Dim::Percent(p) => Some((axis_px * p as usize) / 100),
         }
+    }
+
+    // --- Kitty graphics protocol (APC `_G…`) --------------------------------
+
+    /// Handle one Kitty graphics APC command (payload after `ESC _`, starting
+    /// with `G`). See [`crate::kitty`] for the supported subset.
+    fn kitty(&mut self, data: &[u8]) {
+        let Some((cmd, b64)) = crate::kitty::parse(data) else {
+            return;
+        };
+        match cmd.action {
+            b'q' => {
+                // Query: acknowledge so a client can probe support.
+                self.kitty_reply(cmd.id, cmd.quiet, "OK");
+                return;
+            }
+            b'd' => {
+                self.kitty_delete(&cmd);
+                return;
+            }
+            // Display a stored image with no new data.
+            b'p' if b64.is_empty() && !cmd.more => {
+                if let Some(pos) = self.kitty_store.iter().position(|im| im.id == cmd.id) {
+                    let img = self.kitty_store[pos].clone();
+                    self.place_kitty(&img, &cmd);
+                    if cmd.id != 0 && cmd.quiet == 0 {
+                        self.kitty_reply(cmd.id, cmd.quiet, "OK");
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // Transmission (a=t / a=T / a=p-with-data). Accumulate this chunk; the
+        // first chunk's control block governs the whole transfer.
+        if self.kitty_pending.is_none() {
+            self.kitty_pending = Some((cmd.clone(), Vec::new()));
+        }
+        if let Some((_, buf)) = self.kitty_pending.as_mut() {
+            buf.extend_from_slice(b64);
+            if buf.len() > MAX_KITTY_B64 {
+                self.kitty_pending = None; // hostile / oversized transfer
+                return;
+            }
+        }
+        if cmd.more {
+            return; // more chunks to come
+        }
+        let Some((first, b64all)) = self.kitty_pending.take() else {
+            return;
+        };
+
+        // Only direct base64 transmission is honored; file / shared-memory media
+        // and zlib compression are refused (see `kitty` module docs).
+        if first.medium != b'd' || first.compressed {
+            return;
+        }
+        let Some(bytes) = crate::img::decode_base64(&b64all) else {
+            return;
+        };
+        if bytes.is_empty() {
+            return;
+        }
+
+        let img = match first.format {
+            24 | 32 => {
+                let (w, h) = (first.width as usize, first.height as usize);
+                let bpp = if first.format == 24 { 3 } else { 4 };
+                if w == 0 || h == 0 || w > 1 << 16 || h > 1 << 16 || bytes.len() < w * h * bpp {
+                    return;
+                }
+                let data = if first.format == 24 {
+                    let mut rgba = Vec::with_capacity(w * h * 4);
+                    for px in bytes[..w * h * 3].chunks_exact(3) {
+                        rgba.extend_from_slice(&[px[0], px[1], px[2], 0xff]);
+                    }
+                    rgba
+                } else {
+                    bytes[..w * h * 4].to_vec()
+                };
+                KittyImage {
+                    id: first.id,
+                    format: 32,
+                    width: w as u32,
+                    height: h as u32,
+                    data,
+                }
+            }
+            100 => {
+                // PNG: let the front-end decode it. Sniff native size for layout.
+                let (w, h) = crate::img::sniff_dimensions(&bytes).unwrap_or((0, 0));
+                KittyImage {
+                    id: first.id,
+                    format: 100,
+                    width: w,
+                    height: h,
+                    data: bytes,
+                }
+            }
+            _ => return, // unknown pixel format
+        };
+
+        let display = matches!(first.action, b'T' | b'p');
+        if display {
+            self.place_kitty(&img, &first);
+        }
+        if first.id != 0 {
+            self.kitty_remember(img);
+        }
+        if first.id != 0 && first.quiet == 0 {
+            self.kitty_reply(first.id, first.quiet, "OK");
+        }
+    }
+
+    /// Anchor a normalized Kitty image at the cursor and move the cursor below
+    /// it. Raw RGBA draws 1:1 at native pixels (like Sixel); a PNG is handed to
+    /// the front-end and laid into a cell box (explicit `c`/`r`, else derived).
+    fn place_kitty(&mut self, img: &KittyImage, cmd: &crate::kitty::Cmd) {
+        let col = self.buf().cursor.x;
+        let serial = self.scrolled_off + self.buf().cursor.y as i64;
+        let id = self.next_image_id;
+        self.next_image_id = self.next_image_id.wrapping_add(1).max(1);
+
+        let (width, height, rows_cells, rgba, encoded, mime) = if img.format == 100 {
+            let (cols_cells, rows_cells) =
+                self.kitty_cell_box(cmd, img.width as usize, img.height as usize);
+            (
+                cols_cells * self.cell_px_w,
+                rows_cells * self.cell_px_h,
+                rows_cells,
+                Vec::new(),
+                img.data.clone(),
+                "image/png",
+            )
+        } else {
+            let (w, h) = (img.width as usize, img.height as usize);
+            let rows_cells = h.div_ceil(self.cell_px_h).max(1);
+            (w, h, rows_cells, img.data.clone(), Vec::new(), "")
+        };
+
+        self.images.push(ImageRec {
+            id,
+            serial,
+            col,
+            width,
+            height,
+            rows_cells,
+            rgba,
+            encoded,
+            mime,
+            from_kitty: true,
+            kitty_id: img.id,
+        });
+        self.images_version = self.images_version.wrapping_add(1);
+        if self.images.len() > 256 {
+            self.images.remove(0);
+        }
+        self.advance_below(rows_cells);
+    }
+
+    /// Display size in whole cells for a Kitty image: explicit `c`/`r` win, else
+    /// derive from the native pixel size, clamped to the screen width.
+    fn kitty_cell_box(&self, cmd: &crate::kitty::Cmd, nw: usize, nh: usize) -> (usize, usize) {
+        let cols_cells = if cmd.cols > 0 {
+            cmd.cols as usize
+        } else if nw > 0 {
+            nw.div_ceil(self.cell_px_w)
+        } else {
+            (self.cols() / 2).max(1)
+        };
+        let rows_cells = if cmd.rows > 0 {
+            cmd.rows as usize
+        } else if nh > 0 {
+            nh.div_ceil(self.cell_px_h)
+        } else {
+            (self.rows() / 3).max(1)
+        };
+        (cols_cells.clamp(1, self.cols().max(1)), rows_cells.max(1))
+    }
+
+    /// Store a transmitted image for a later `a=p`, replacing any same-id entry
+    /// and bounding the store by count and total bytes.
+    fn kitty_remember(&mut self, img: KittyImage) {
+        self.kitty_store.retain(|im| im.id != img.id);
+        self.kitty_store.push(img);
+        while self.kitty_store.len() > 32 {
+            self.kitty_store.remove(0);
+        }
+        let mut total: usize = self.kitty_store.iter().map(|im| im.data.len()).sum();
+        while total > MAX_KITTY_STORE && self.kitty_store.len() > 1 {
+            total -= self.kitty_store.remove(0).data.len();
+        }
+    }
+
+    /// Delete Kitty images. `d=i`/`I` targets one client id; anything else
+    /// clears all Kitty images. Sixel / iTerm2 images are never touched.
+    fn kitty_delete(&mut self, cmd: &crate::kitty::Cmd) {
+        let before = self.images.len();
+        match cmd.delete {
+            b'i' | b'I' if cmd.id != 0 => {
+                self.images
+                    .retain(|im| !(im.from_kitty && im.kitty_id == cmd.id));
+                self.kitty_store.retain(|im| im.id != cmd.id);
+            }
+            _ => {
+                self.images.retain(|im| !im.from_kitty);
+                self.kitty_store.clear();
+            }
+        }
+        if self.images.len() != before {
+            self.images_version = self.images_version.wrapping_add(1);
+        }
+    }
+
+    /// Emit a Kitty response (`ESC _ G i=<id>;<msg> ESC \`) unless suppressed.
+    fn kitty_reply(&mut self, id: u32, quiet: u32, msg: &str) {
+        if quiet >= 2 {
+            return;
+        }
+        let s = if id != 0 {
+            format!("\x1b_Gi={};{}\x1b\\", id, msg)
+        } else {
+            format!("\x1b_G;{}\x1b\\", msg)
+        };
+        self.output.extend_from_slice(s.as_bytes());
     }
 
     /// Drop images that have scrolled entirely out of retained scrollback.
@@ -1796,5 +2065,9 @@ impl Perform for Terminal {
         if let Some(img) = crate::sixel::decode(data) {
             self.place_image(img);
         }
+    }
+
+    fn apc_dispatch(&mut self, data: &[u8]) {
+        self.kitty(data);
     }
 }

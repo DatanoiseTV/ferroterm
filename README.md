@@ -41,12 +41,15 @@ and captures input.
 - **Dynamic palette**: OSC 4 (palette entries), OSC 10/11/12 (default fg / bg /
   cursor) and OSC 104/110/111/112 (resets) are applied live, including `?`
   color-query replies.
-- **Inline images**: DCS **Sixel** (RGB + HLS colors, RLE) *and* the **iTerm2**
+- **Inline images**: DCS **Sixel** (RGB + HLS colors, RLE), the **iTerm2**
   protocol (OSC 1337 `File=`, any format the browser decodes — PNG/JPEG/GIF/BMP/
-  WebP) are composited over the grid in a renderer-agnostic overlay; images scroll
-  with their text and are anchored in scrollback. Works with both renderers. Sixel
-  is decoded in the Rust core; iTerm2 images are decoded natively by the browser
-  (`createImageBitmap`), so no image codec is linked into the WASM.
+  WebP) *and* the **Kitty** graphics protocol (APC `_G…`: direct RGB/RGBA/PNG
+  transmission, chunked, transmit-and-display / store-and-place, delete, query)
+  are composited over the grid in a renderer-agnostic overlay; images scroll with
+  their text and are anchored in scrollback. Works with both renderers. Sixel and
+  Kitty raw pixels are handled in the Rust core; iTerm2/Kitty PNGs are decoded
+  natively by the browser (`createImageBitmap`), so no image codec is linked into
+  the WASM.
 - **Two renderers, swappable at runtime**: a Canvas2D renderer that redraws only
   dirty rows, and a WebGL renderer with a dynamic glyph atlas. The WebGL renderer
   keeps a persistent per-cell GPU buffer and re-uploads only the rows that
@@ -256,8 +259,9 @@ The core tests assert against the *visible grid state* (what a renderer would
 draw), which is the strongest check for an emulator: printing/wrapping, cursor
 motion, erase/scroll regions, SGR (incl. true color), alt-screen isolation, wide
 chars, astral emoji, grapheme clusters (combining marks, ZWJ sequences, flags),
-OSC titles, OSC 8 links, Sixel and iTerm2 (OSC 1337) image placement, DSR/DA
-replies, and a fuzz-style "malicious input must not panic/hang" case.
+OSC titles, OSC 8 links, Sixel / iTerm2 (OSC 1337) / Kitty (APC `_G`) image
+placement, DSR/DA replies, and a fuzz-style "malicious input must not panic/hang"
+case.
 
 The renderer tests (`web/test/`, `CHROME_BIN` overridable) render a feature-rich
 scene through **both** renderers in headless Chrome and assert semantic per-cell
@@ -283,11 +287,16 @@ runs `cargo fmt --check` + `clippy -D warnings` + `cargo test` and this suite.
 
 ## Known limitations (honestly)
 
-- **Images: Sixel and iTerm2, not Kitty.** Sixel and iTerm2 (OSC 1337 `File=`)
-  inline images are decoded and rendered; the Kitty graphics protocol is
-  recognized and consumed but not rendered. **No programming ligatures** —
-  correct ligature shaping needs a font shaper (GSUB/HarfBuzz), and a heuristic
-  hack would misrender as often as it helped, so it's deliberately left out.
+- **Kitty graphics: the common subset, not the whole protocol.** Direct base64
+  transmission (`t=d`) of RGB/RGBA/PNG, chunked transfers, transmit-and-display,
+  store-then-place by id, delete and query all work — enough for `kitten icat`
+  and similar. Not implemented, and refused cleanly so the stream stays in sync:
+  file / shared-memory transmission (`t=f|t|s`, which would let an escape read
+  host files), zlib-compressed payloads (`o=z` — no inflate is linked in),
+  animation, Unicode placeholders and relative/z-index placement.
+- **No programming ligatures.** Correct ligature shaping needs a font shaper
+  (GSUB/HarfBuzz) and a run-based renderer; a per-cell heuristic would misrender
+  as often as it helped, so it's deliberately left out rather than faked.
 - **Reflow** rewraps the primary screen + scrollback on resize, keeping the
   cursor on its character. The alternate screen is intentionally *not* reflowed
   (full-screen apps repaint on `SIGWINCH`), and a cursor parked mid-screen on the

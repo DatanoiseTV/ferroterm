@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-07-05
+
+### Added
+- **Kitty graphics protocol (APC `_G…`).** The parser now captures APC strings
+  (previously consumed and discarded) and routes `_G` commands to a new core
+  handler. Supported: direct base64 transmission (`t=d`) of RGB (`f=24`, expanded
+  to opaque RGBA in-core), RGBA (`f=32`) and PNG (`f=100`, handed to the browser
+  to decode — no codec linked into the WASM); chunked transfers (`m=1`);
+  transmit-and-display (`a=T`), store-then-place-by-id (`a=t` then `a=p`), delete
+  (`a=d`, scoped to Kitty images so Sixel/iTerm2 are untouched) and query
+  (`a=q`, acknowledged). Images reuse the existing renderer-agnostic overlay, so
+  they scroll with their text and render on both the Canvas2D and WebGL paths.
+  Verified end-to-end in headless Chrome (a transmitted RGBA block rasterizes to
+  the expected pixels at its placement).
+- File / temp-file / shared-memory transmission (`t=f|t|s`) and zlib-compressed
+  payloads (`o=z`) are **refused cleanly** rather than mis-handled: the former
+  would let a terminal escape read arbitrary host files; the latter needs an
+  inflate the core doesn't link. The byte stream stays in sync in both cases.
+
 ## [0.6.2] - 2026-07-05
 
 ### Fixed

@@ -130,6 +130,10 @@ pub trait Perform {
     /// ignores it. Used for Sixel (`... q ...`). `truncated` is set if the
     /// payload hit the parser's size cap.
     fn dcs_dispatch(&mut self, _data: &[u8], _truncated: bool) {}
+    /// A completed APC (`ESC _ ... ST`). `data` is the raw payload after `ESC _`.
+    /// The default ignores it. Used for the Kitty graphics protocol (`_G…`).
+    /// SOS (`ESC X`) and PM (`ESC ^`) strings are not delivered here — only APC.
+    fn apc_dispatch(&mut self, _data: &[u8]) {}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -158,6 +162,10 @@ pub struct Parser {
     /// memory against a hostile un-terminated sequence.
     dcs_raw: Vec<u8>,
     dcs_overflow: bool,
+    /// Raw APC payload (everything after `ESC _`, up to ST), captured only when
+    /// the string opener was APC (not SOS/PM). Capped like DCS.
+    apc_raw: Vec<u8>,
+    apc_active: bool,
     // UTF-8 decode state (only used in Ground).
     utf8_remaining: u8,
     utf8_cp: u32,
@@ -183,6 +191,8 @@ impl Parser {
             osc_raw: Vec::new(),
             dcs_raw: Vec::new(),
             dcs_overflow: false,
+            apc_raw: Vec::new(),
+            apc_active: false,
             utf8_remaining: 0,
             utf8_cp: 0,
             utf8_min: 0,
@@ -238,6 +248,8 @@ impl Parser {
                     self.osc_end(perform, false);
                 } else if self.state == State::DcsPassthrough {
                     self.dcs_end(perform);
+                } else if self.state == State::SosPmApcString {
+                    self.apc_end(perform);
                 }
                 self.enter_escape();
                 return;
@@ -358,8 +370,15 @@ impl Parser {
                 self.dcs_overflow = false;
                 self.state = State::DcsPassthrough;
             }
-            0x58 | 0x5e | 0x5f => {
-                // SOS / PM / APC
+            0x58 | 0x5e => {
+                // SOS / PM: consumed, not interpreted.
+                self.apc_active = false;
+                self.state = State::SosPmApcString;
+            }
+            0x5f => {
+                // APC ('_'): captured for the Kitty graphics protocol.
+                self.apc_active = true;
+                self.apc_raw.clear();
                 self.state = State::SosPmApcString;
             }
             0x30..=0x4f | 0x51..=0x57 | 0x59 | 0x5a | 0x5c | 0x60..=0x7e => {
@@ -531,9 +550,76 @@ impl Parser {
         self.dcs_overflow = false;
     }
 
-    // --- SOS / PM / APC (consumed, not interpreted) -------------------------
+    // --- SOS / PM / APC -----------------------------------------------------
+    // SOS and PM are consumed and dropped; APC is captured (Kitty graphics).
 
     fn sos_pm_apc(&mut self, b: u8) {
-        let _ = b;
+        if self.apc_active && self.apc_raw.len() < MAX_DCS {
+            self.apc_raw.push(b);
+        }
+    }
+
+    fn apc_end<P: Perform>(&mut self, perform: &mut P) {
+        if self.apc_active {
+            perform.apc_dispatch(&self.apc_raw);
+            self.apc_raw.clear();
+            self.apc_active = false;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Rec {
+        apc: Vec<Vec<u8>>,
+        printed: String,
+    }
+    impl Perform for Rec {
+        fn print(&mut self, c: char) {
+            self.printed.push(c);
+        }
+        fn print_ascii(&mut self, b: &[u8]) {
+            self.printed.push_str(std::str::from_utf8(b).unwrap());
+        }
+        fn execute(&mut self, _b: u8) {}
+        fn csi_dispatch(&mut self, _: &Params, _: &[u8], _: bool, _: char) {}
+        fn esc_dispatch(&mut self, _: &[u8], _: u8) {}
+        fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
+        fn apc_dispatch(&mut self, data: &[u8]) {
+            self.apc.push(data.to_vec());
+        }
+    }
+
+    fn run(input: &[u8]) -> Rec {
+        let mut p = Parser::new();
+        let mut r = Rec::default();
+        p.advance(&mut r, input);
+        r
+    }
+
+    #[test]
+    fn apc_payload_is_captured_between_esc_underscore_and_st() {
+        let r = run(b"\x1b_Ga=T,f=100;AAAA\x1b\\after");
+        assert_eq!(r.apc, vec![b"Ga=T,f=100;AAAA".to_vec()]);
+        assert_eq!(r.printed, "after", "ground text resumes after ST");
+    }
+
+    #[test]
+    fn sos_and_pm_strings_are_not_delivered_as_apc() {
+        // ESC X (SOS) and ESC ^ (PM) must be consumed silently.
+        let r = run(b"\x1bXhidden\x1b\\\x1b^also\x1b\\visible");
+        assert!(r.apc.is_empty(), "SOS/PM must not reach apc_dispatch");
+        assert_eq!(r.printed, "visible");
+    }
+
+    #[test]
+    fn apc_terminated_by_esc_restart_flushes() {
+        // A fresh ESC sequence right after the payload flushes the APC first.
+        let r = run(b"\x1b_Gpayload\x1b[0mX");
+        assert_eq!(r.apc, vec![b"Gpayload".to_vec()]);
+        assert_eq!(r.printed, "X");
     }
 }
