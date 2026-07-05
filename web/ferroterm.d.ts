@@ -116,6 +116,36 @@ export class Ferroterm {
 
 export default Ferroterm;
 
+/**
+ * A Custom Element (`<ferro-term>`) wrapping the `Ferroterm` engine for
+ * declarative HTML use. Register it once with {@link defineFerroTermElement}.
+ *
+ * Attributes map to {@link FerrotermOptions}: `cols`, `rows`, `renderer`,
+ * `font-size`, `font-family`, `line-height`, `scrollback`, `cursor-style`,
+ * `cursor-blink`, `copy-on-select`, `right-click`, plus a boolean `fit` that
+ * enables auto-fitting the element's box (off by default → a fixed grid).
+ *
+ * Emits `ready` (once WASM + the view are up), `data` (`Uint8Array`), `title`
+ * (`string`) and `resize` (`{ cols, rows }`) as `CustomEvent`s.
+ */
+export class FerroTermElement extends HTMLElement {
+  /** The underlying engine, or `null` until {@link ready} resolves. */
+  readonly terminal: Ferroterm | null;
+  /** Resolves with the engine once WASM and the view are up. */
+  readonly ready: Promise<Ferroterm>;
+  /** Feed bytes/text; buffered until `ready` if called early. */
+  write(data: Uint8Array | string): this;
+  focus(): void;
+  blur(): void;
+  fit(): void;
+}
+
+/**
+ * Register the `<ferro-term>` element (idempotent; a no-op outside a browser or
+ * when already defined). Returns the tag name.
+ */
+export function defineFerroTermElement(tag?: string): string;
+
 export class GridModel {
   cols: number;
   rows: number;

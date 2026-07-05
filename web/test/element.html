@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>ferroterm custom-element test</title>
+<script type="module">
+  // Registers <ferro-term>, mounts one declaratively, and verifies it is a real
+  // Custom Element that boots the engine, honors attributes, mounts a renderer,
+  // and bridges engine output to a DOM `data` event. Results land on
+  // window.__elResult for the CDP runner.
+  import { Ferroterm, FerroTermElement, defineFerroTermElement } from '../src/index.js';
+
+  try {
+    const tag = defineFerroTermElement();
+
+    const el = document.createElement(tag);
+    el.setAttribute('cols', '40');
+    el.setAttribute('rows', '10');
+    el.setAttribute('renderer', 'webgl');
+    el.style.width = '600px';
+    el.style.height = '240px';
+
+    // Capture the engine->DOM data bridge: a Primary DA query (ESC [ c) makes
+    // the terminal emit a host reply, which must surface as a `data` event.
+    let dataEventLen = 0;
+    el.addEventListener('data', (e) => {
+      dataEventLen += e.detail ? e.detail.length : 0;
+    });
+
+    document.body.appendChild(el);
+    const term = await el.ready;
+
+    el.write('\x1b[c'); // Primary DA -> reply via `data`
+    await new Promise((r) => setTimeout(r, 30));
+
+    window.__elResult = {
+      registered: customElements.get(tag) === FerroTermElement,
+      isHTMLElement: el instanceof HTMLElement,
+      isCustomElement: el instanceof FerroTermElement,
+      terminalIsEngine: term instanceof Ferroterm && el.terminal === term,
+      colsHonored: term.cols === 40,
+      rowsHonored: term.rows === 10,
+      rendererMounted: !!el.querySelector('canvas'),
+      dataEventFired: dataEventLen > 0,
+    };
+    window.__done = true;
+  } catch (e) {
+    window.__error = (e && e.stack) || String(e);
+    window.__done = true;
+  }
+</script>

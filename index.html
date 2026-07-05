@@ -383,6 +383,21 @@ term.<span class="t-fn">onData</span>(b => ws.<span class="t-fn">send</span>(b))
 ws.onmessage = e => term.<span class="t-fn">write</span>(<span class="t-kw">new</span> <span class="t-pn">Uint8Array</span>(e.data));</pre>
         </div>
       </div>
+
+      <div class="code" style="margin-top: 18px;">
+        <div class="chead">or as a custom element<button class="copy" data-copy="element">copy</button></div>
+<pre id="element"><span class="t-cm">// register the &lt;ferro-term&gt; tag once</span>
+<span class="t-kw">import</span> { defineFerroTermElement } <span class="t-kw">from</span> <span class="t-str">'ferroterm'</span>;
+<span class="t-fn">defineFerroTermElement</span>();
+
+<span class="t-cm">&lt;!-- then use it declaratively in HTML --&gt;</span>
+<span class="t-pn">&lt;ferro-term</span> cols=<span class="t-str">"80"</span> rows=<span class="t-str">"24"</span> renderer=<span class="t-str">"webgl"</span><span class="t-pn">&gt;&lt;/ferro-term&gt;</span>
+
+<span class="t-kw">const</span> el = document.<span class="t-fn">querySelector</span>(<span class="t-str">'ferro-term'</span>);
+<span class="t-kw">await</span> el.ready;                                <span class="t-cm">// WASM + view are up</span>
+el.<span class="t-fn">addEventListener</span>(<span class="t-str">'data'</span>, e => ws.<span class="t-fn">send</span>(e.detail));
+ws.onmessage = m => el.<span class="t-fn">write</span>(<span class="t-kw">new</span> <span class="t-pn">Uint8Array</span>(m.data));</pre>
+      </div>
     </section>
 
     <!-- Demos -->

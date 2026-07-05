@@ -115,6 +115,31 @@ term.fit();
 term.focus();
 ```
 
+Or declaratively, as a real Custom Element — register the tag once, then use
+`<ferro-term>` in markup. Attributes map to the options above (kebab-case), and
+engine output is bridged to DOM events:
+
+```js
+import { defineFerroTermElement } from 'ferroterm';
+defineFerroTermElement();          // registers <ferro-term> (idempotent)
+```
+
+```html
+<ferro-term cols="80" rows="24" renderer="webgl"></ferro-term>
+<script type="module">
+  const el = document.querySelector('ferro-term');
+  await el.ready;                                  // WASM + view are up
+  el.addEventListener('data', e => sock.send(e.detail));   // keystrokes -> PTY
+  sock.onmessage = m => el.write(new Uint8Array(m.data));  // PTY -> screen
+  // also emits `ready`, `title` and `resize` CustomEvents; `el.terminal` is the
+  // underlying engine for the full API.
+</script>
+```
+
+Registration is an explicit call (not an import side effect) so the package
+stays tree-shakeable. Add a boolean `fit` attribute to auto-fit the element's
+box instead of using a fixed `cols`×`rows` grid.
+
 Switch renderers live: `term.setRenderer('canvas')`. Re-theme:
 `term.setTheme({ background: '#000', ansi: [...] })`.
 

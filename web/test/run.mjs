@@ -124,6 +124,23 @@ async function main() {
     const image = imgDone && !imgErr
       ? (await send('Runtime.evaluate', { expression: 'window.__imgResult', returnByValue: true })).result.result.value
       : null;
+
+    // Custom-element fixture: register <ferro-term>, mount it declaratively, and
+    // confirm it is a real Custom Element that boots the engine and bridges
+    // engine output to a DOM `data` event.
+    await send('Page.navigate', { url: `http://localhost:${PORT}/test/element.html` });
+    let elResult = null, elErr = null;
+    for (let i = 0; i < 100; i++) {
+      const ready = (await send('Runtime.evaluate', {
+        expression: '!!(window.__elResult || window.__error)', returnByValue: true,
+      })).result.result.value;
+      if (ready) {
+        elErr = (await send('Runtime.evaluate', { expression: 'window.__error || null', returnByValue: true })).result.result.value;
+        elResult = (await send('Runtime.evaluate', { expression: 'window.__elResult || null', returnByValue: true })).result.result.value;
+        break;
+      }
+      await sleep(100);
+    }
     closeWs();
 
     const T = data.theme;
@@ -173,6 +190,29 @@ async function main() {
         if (!ok) failures++;
       }
       console.log(`          sample [${image.sample}] expected ~[${image.expected}], box [${image.size}]`);
+    }
+
+    // Custom element (<ferro-term>): registered, boots, honors attributes, and
+    // bridges engine output to a `data` event.
+    console.log('\n  <ferro-term> custom element');
+    if (!elResult) {
+      console.log(`    FAIL  fixture did not produce a result${elErr ? ': ' + elErr : ''}`);
+      failures++;
+    } else {
+      const checks = [
+        ['registered as FerroTermElement', elResult.registered],
+        ['is an HTMLElement', elResult.isHTMLElement],
+        ['is a FerroTermElement', elResult.isCustomElement],
+        ['terminal is the engine', elResult.terminalIsEngine],
+        ['cols attribute honored', elResult.colsHonored],
+        ['rows attribute honored', elResult.rowsHonored],
+        ['renderer mounted', elResult.rendererMounted],
+        ['data event fired', elResult.dataEventFired],
+      ];
+      for (const [name, ok] of checks) {
+        console.log(`    ${ok ? 'PASS' : 'FAIL'}  ${name}`);
+        if (!ok) failures++;
+      }
     }
 
     console.log(`\n  ${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}\n`);

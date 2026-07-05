@@ -14,6 +14,17 @@ All notable changes to this project are documented here. The format is based on
   between, wide-glyph spacers skipped, trailing blanks trimmed, lines joined
   with `\n`. Unit tested for the spanning, reversed-endpoint and single-line
   cases. Consumed by the native app; not yet surfaced in the web component.
+- **`<ferro-term>` Custom Element** in the web package — the terminal can now be
+  used declaratively in HTML, making the "web component" description literally
+  true (an actual Custom Element, not just a library). Attributes map to the
+  factory options (`cols`, `rows`, `renderer`, `font-size`, `scrollback`, …,
+  plus a boolean `fit`); engine output is bridged to `ready`, `data`, `title`
+  and `resize` `CustomEvent`s, and `el.terminal` exposes the full engine API.
+  The imperative `Ferroterm.create(el, opts)` API is unchanged. Registration is
+  an explicit `defineFerroTermElement()` call rather than an import side effect,
+  keeping the package tree-shakeable. Verified by a headless test that mounts the
+  element, checks registration/attributes/renderer mount, and asserts a host
+  reply surfaces as a `data` event.
 
 ## [native-0.9.0] - 2026-07-05
 
