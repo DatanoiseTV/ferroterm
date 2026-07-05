@@ -5,6 +5,7 @@
 
 use ferroterm_core::Terminal;
 use ferroterm_native::atlas::Atlas;
+use ferroterm_native::images::{ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
 use ferroterm_native::snapshot::Grid;
@@ -307,5 +308,276 @@ fn bold_and_italic_rasterize_differently() {
     assert!(
         bold_lit >= reg_lit,
         "bold ({bold_lit}) should not be lighter than regular ({reg_lit})"
+    );
+}
+
+/// Read an offscreen texture back as tightly-packed RGBA rows.
+fn readback(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    tex: &wgpu::Texture,
+    w: u32,
+    h: u32,
+) -> Vec<u8> {
+    let padded = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size: (padded * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::ImageCopyBuffer {
+            buffer: &buf,
+            layout: wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(enc.finish()));
+    let slice = buf.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::Maintain::Wait);
+    let data = slice.get_mapped_range();
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        let src = (y * padded) as usize;
+        let dst = (y * w * 4) as usize;
+        out[dst..dst + (w * 4) as usize].copy_from_slice(&data[src..src + (w * 4) as usize]);
+    }
+    drop(data);
+    buf.unmap();
+    out
+}
+
+#[test]
+fn inline_rgba_image_draws_over_cells() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (8usize, 4usize);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+
+    // A blank grid: cells clear to the theme background.
+    let term = Terminal::new(cols, rows, 100);
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    let mut term = term;
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    // Offscreen target that both passes render into.
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FMT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Cells first (clears to bg), then the image over them.
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    r.set_screen(&queue, w as f32, h as f32, 0.0, 0.0);
+    r.render(
+        &device,
+        &queue,
+        &view,
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+    );
+
+    let mut layer = ImageLayer::new(&device, FMT);
+    layer.set_screen(w as f32, h as f32, 0.0, 0.0);
+    // A 20x20 opaque magenta image at pixel (12, 8).
+    let (iw, ih) = (20u32, 20u32);
+    let magenta: Vec<u8> = (0..iw * ih).flat_map(|_| [255u8, 0, 255, 255]).collect();
+    let quad = ImageQuad {
+        id: 1,
+        w: iw,
+        h: ih,
+        x: 12.0,
+        y: 8.0,
+        rgba: &magenta,
+    };
+    layer.render(&device, &queue, &view, &[quad]);
+
+    let px = readback(&device, &queue, &tex, w, h);
+    let at = |x: u32, y: u32| -> [u8; 3] {
+        let o = ((y * w + x) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2]]
+    };
+    let near = |got: [u8; 3], exp: (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        d(got[0], exp.0) <= 12 && d(got[1], exp.1) <= 12 && d(got[2], exp.2) <= 12
+    };
+
+    // Inside the image → magenta. Well outside (bottom-right) → theme bg.
+    let inside = at(20, 16);
+    let outside = at(w - 4, h - 4);
+    eprintln!("  inside {inside:?} (want magenta), outside {outside:?} (want bg)");
+    assert!(
+        near(inside, (255, 0, 255)),
+        "image pixel not magenta: {inside:?}"
+    );
+    assert!(
+        near(outside, (0x1a, 0x1b, 0x26)),
+        "outside the image should be background: {outside:?}"
+    );
+}
+
+#[test]
+fn kitty_image_renders_end_to_end() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    // Feed a real Kitty RGBA image to the terminal, then build image quads the
+    // same way the app's render loop does (placements -> rgba -> quads).
+    fn b64(data: &[u8]) -> String {
+        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in data.chunks(3) {
+            let n = (c[0] as u32) << 16
+                | (*c.get(1).unwrap_or(&0) as u32) << 8
+                | *c.get(2).unwrap_or(&0) as u32;
+            out.push(T[(n >> 18 & 63) as usize] as char);
+            out.push(T[(n >> 12 & 63) as usize] as char);
+            out.push(if c.len() > 1 {
+                T[(n >> 6 & 63) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if c.len() > 2 {
+                T[(n & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (10usize, 6usize);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+
+    let mut term = Terminal::new(cols, rows, 100);
+    // 12x12 solid cyan RGBA, transmit-and-display at the cursor (row 0, col 0).
+    let (iw, ih) = (12u32, 12u32);
+    let cyan: Vec<u8> = (0..iw * ih).flat_map(|_| [0u8, 255, 255, 255]).collect();
+    term.feed(format!("\x1b_Ga=T,f=32,s={iw},v={ih};{}\x1b\\", b64(&cyan)).as_bytes());
+
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FMT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    r.set_screen(&queue, w as f32, h as f32, 0.0, 0.0);
+    r.render(
+        &device,
+        &queue,
+        &view,
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+    );
+
+    // Mirror main.rs: turn placements into quads.
+    let placements = term.image_placements();
+    let mut rgbas: Vec<(u32, u32, u32, f32, f32, Vec<u8>)> = Vec::new();
+    for p in placements.chunks(5) {
+        let (id, row, col, pw, ph) = (p[0] as u32, p[1], p[2], p[3] as u32, p[4] as u32);
+        let rgba = term.image_rgba(id);
+        if rgba.is_empty() {
+            continue;
+        }
+        rgbas.push((
+            id,
+            pw,
+            ph,
+            col as f32 * cw as f32,
+            row as f32 * ch as f32,
+            rgba,
+        ));
+    }
+    assert_eq!(rgbas.len(), 1, "one raw image should be placed");
+    let quads: Vec<ImageQuad> = rgbas
+        .iter()
+        .map(|(id, pw, ph, x, y, rgba)| ImageQuad {
+            id: *id,
+            w: *pw,
+            h: *ph,
+            x: *x,
+            y: *y,
+            rgba,
+        })
+        .collect();
+
+    let mut layer = ImageLayer::new(&device, FMT);
+    layer.set_screen(w as f32, h as f32, 0.0, 0.0);
+    layer.render(&device, &queue, &view, &quads);
+
+    let px = readback(&device, &queue, &tex, w, h);
+    let at = |x: u32, y: u32| -> [u8; 3] {
+        let o = ((y * w + x) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2]]
+    };
+    let inside = at(6, 6); // inside the 12x12 image at (0,0)
+    eprintln!("  kitty image inside pixel {inside:?} (want cyan)");
+    let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+    assert!(
+        d(inside[0], 0) <= 12 && d(inside[1], 255) <= 12 && d(inside[2], 255) <= 12,
+        "kitty image did not render cyan: {inside:?}"
     );
 }

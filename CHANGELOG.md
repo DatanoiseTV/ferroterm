@@ -25,6 +25,14 @@ the web renderer:
   (codepoint, wide, style). Verified by a headless render asserting bold/italic
   cells differ from regular and from each other, with bold no lighter than
   regular.
+- **Inline image rendering** in the native app. A second GPU pass draws placed
+  RGBA images (Sixel and Kitty `f=24`/`f=32`) as textured quads over the cells,
+  aligned to the grid and scroll-tracked via the core's placement API, with
+  per-image textures cached by id and drawn in one pass using dynamic uniform
+  offsets. Encoded images (iTerm2, Kitty PNG) carry no RGBA and are skipped —
+  the native app links no image codec yet (a follow-up). Verified by headless
+  renders: a direct RGBA quad over cells, and a full path feeding a Kitty image
+  to the terminal and asserting it rasterizes at its placement.
 
 ## [0.7.0] - 2026-07-05
 

@@ -4,6 +4,7 @@
 //! same renderer against an offscreen texture.
 
 pub mod atlas;
+pub mod images;
 pub mod palette;
 pub mod renderer;
 pub mod snapshot;

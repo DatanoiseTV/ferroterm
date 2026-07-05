@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use ferroterm_core::Terminal;
 use ferroterm_native::atlas::Atlas;
+use ferroterm_native::images::{ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
 use ferroterm_native::snapshot::Grid;
@@ -34,6 +35,7 @@ struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
+    images: ImageLayer,
     atlas: Atlas,
     palette: Palette,
     term: Terminal,
@@ -46,6 +48,10 @@ struct State {
     /// Inset (device px) kept clear on every side so the grid doesn't run under
     /// the window's rounded corners / title bar.
     pad: u32,
+    /// Grid origin (device px) — the top-left inset where cell (0,0) is drawn.
+    /// Kept in sync with the renderer so inline images align with the text.
+    origin_x: f32,
+    origin_y: f32,
 }
 
 struct App {
@@ -104,12 +110,19 @@ impl State {
         let atlas = Atlas::new((15.0 * scale).round().max(8.0));
         let palette = Palette::new(Theme::default());
         let renderer = Renderer::new(&device, &queue, format, &atlas);
+        let mut images = ImageLayer::new(&device, format);
 
         let pad = (8.0 * scale).round() as u32;
         let (cols, rows, ox, oy) =
             grid_layout(config.width, config.height, atlas.cell_w, atlas.cell_h, pad);
         renderer.set_screen(
             &queue,
+            config.width as f32,
+            config.height as f32,
+            ox as f32,
+            oy as f32,
+        );
+        images.set_screen(
             config.width as f32,
             config.height as f32,
             ox as f32,
@@ -131,6 +144,7 @@ impl State {
             queue,
             config,
             renderer,
+            images,
             atlas,
             palette,
             term,
@@ -141,6 +155,8 @@ impl State {
             cols,
             rows,
             pad,
+            origin_x: ox as f32,
+            origin_y: oy as f32,
         }
     }
 
@@ -156,6 +172,10 @@ impl State {
             grid_layout(w, h, self.atlas.cell_w, self.atlas.cell_h, self.pad);
         self.renderer
             .set_screen(&self.queue, w as f32, h as f32, ox as f32, oy as f32);
+        self.images
+            .set_screen(w as f32, h as f32, ox as f32, oy as f32);
+        self.origin_x = ox as f32;
+        self.origin_y = oy as f32;
         if cols != self.cols || rows != self.rows {
             self.cols = cols;
             self.rows = rows;
@@ -197,6 +217,39 @@ impl State {
             true,
             self.palette.theme.bg,
         );
+
+        // Inline images: draw RGBA placements (Sixel / Kitty raw) over the cells.
+        let cw = self.atlas.cell_w as f32;
+        let ch = self.atlas.cell_h as f32;
+        let placements = self.term.image_placements(); // [id, row, col, w, h] * n
+        let mut rgbas: Vec<(u32, u32, u32, f32, f32, Vec<u8>)> = Vec::new();
+        for p in placements.chunks(5) {
+            let (id, row, col, iw, ih) = (p[0] as u32, p[1], p[2], p[3] as u32, p[4] as u32);
+            // Skip images fully above/below the viewport.
+            let y = self.origin_y + row as f32 * ch;
+            if y + ih as f32 <= 0.0 || y >= self.config.height as f32 {
+                continue;
+            }
+            let rgba = self.term.image_rgba(id);
+            if rgba.is_empty() {
+                continue; // encoded image (no native decoder yet)
+            }
+            let x = self.origin_x + col as f32 * cw;
+            rgbas.push((id, iw, ih, x, y, rgba));
+        }
+        let quads: Vec<ImageQuad> = rgbas
+            .iter()
+            .map(|(id, w, h, x, y, rgba)| ImageQuad {
+                id: *id,
+                w: *w,
+                h: *h,
+                x: *x,
+                y: *y,
+                rgba,
+            })
+            .collect();
+        self.images.render(&self.device, &self.queue, &view, &quads);
+
         frame.present();
     }
 }
