@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Native app (`apps/native`, versioned independently) — closing parity gaps with
+the web renderer:
+
+### Added
+- **Underline and strikethrough** in the native wgpu renderer. Decorations are
+  emitted as thin solid foreground-colored instances (reusing the no-glyph path)
+  positioned to match the web renderer (underline at baseline+2, strike at 55%
+  of the cell), thickness scaled to the cell. Underlined blank cells now draw the
+  line even with a transparent background. Verified by a headless offscreen
+  render asserting exact line colors at the expected rows.
+
 ## [0.7.0] - 2026-07-05
 
 ### Added

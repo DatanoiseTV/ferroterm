@@ -4,9 +4,9 @@
 //!
 //!   cargo run --release --example shot -- out.png
 //!
-//! The scene is limited to what milestone 1 renders (colors, plain text,
-//! box-drawing); it avoids CJK/emoji (the bundled monospace lacks them) and
-//! underline/strike (not yet in the native overlay).
+//! The scene is limited to what the native renderer draws today (colors, plain
+//! text, box-drawing, underline/strikethrough); it avoids CJK/emoji, which the
+//! bundled monospace lacks.
 
 use std::io::BufWriter;
 

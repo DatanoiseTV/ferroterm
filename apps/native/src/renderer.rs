@@ -299,6 +299,9 @@ pub fn build_instances(
 ) -> Vec<Instance> {
     let cw = atlas.cell_w as f32;
     let ch = atlas.cell_h as f32;
+    // Underline / strikethrough line thickness, scaled to the cell size.
+    let deco_thick = (ch / 16.0).round().max(1.0);
+    let baseline = atlas.baseline() as f32;
     let mut out = Vec::with_capacity(grid.cols * grid.rows + 1);
 
     for y in 0..grid.rows {
@@ -312,6 +315,7 @@ pub fn build_instances(
             let bold = flags & attr::BOLD != 0;
             let wide = flags & attr::WIDE != 0;
             let has_glyph = c.cp != 0x20 && c.cp != 0 && flags & attr::INVISIBLE == 0;
+            let has_deco = flags & (attr::UNDERLINE | attr::STRIKETHROUGH) != 0;
 
             let (fg_rgb, bg_rgb, bg_a) = if inverse {
                 (
@@ -331,23 +335,49 @@ pub fn build_instances(
                     if filled { 255 } else { 0 },
                 )
             };
-            if !has_glyph && bg_a == 0 {
+            if !has_glyph && bg_a == 0 && !has_deco {
                 continue;
             }
             let fg_a = if flags & attr::DIM != 0 { 153 } else { 255 };
-            let uv = if has_glyph {
-                let g = atlas.glyph(c.cp, wide);
-                [g.u0, g.v0, g.u1, g.v1]
-            } else {
-                [-1.0, -1.0, -1.0, -1.0]
-            };
             let w = if wide { cw * 2.0 } else { cw };
-            out.push(Instance {
-                rect: [x as f32 * cw, y as f32 * ch, w, ch],
-                uv,
-                fg: [fg_rgb.0, fg_rgb.1, fg_rgb.2, fg_a],
-                bg: [bg_rgb.0, bg_rgb.1, bg_rgb.2, bg_a],
-            });
+            let (ox, oy) = (x as f32 * cw, y as f32 * ch);
+
+            // The cell rect (glyph over background). Skip it for a bare
+            // decorated cell with no glyph and a transparent background, so the
+            // decoration draws over the cleared bg rather than a solid box.
+            if has_glyph || bg_a != 0 {
+                let uv = if has_glyph {
+                    let g = atlas.glyph(c.cp, wide);
+                    [g.u0, g.v0, g.u1, g.v1]
+                } else {
+                    [-1.0, -1.0, -1.0, -1.0]
+                };
+                out.push(Instance {
+                    rect: [ox, oy, w, ch],
+                    uv,
+                    fg: [fg_rgb.0, fg_rgb.1, fg_rgb.2, fg_a],
+                    bg: [bg_rgb.0, bg_rgb.1, bg_rgb.2, bg_a],
+                });
+            }
+
+            // Underline / strikethrough: a solid fg-colored line (no glyph),
+            // positioned to match the web renderer (baseline+2, 55% of cell).
+            if has_deco {
+                let line = |ly: f32, out: &mut Vec<Instance>| {
+                    out.push(Instance {
+                        rect: [ox, oy + ly, w, deco_thick],
+                        uv: [-1.0, -1.0, -1.0, -1.0],
+                        fg: [0, 0, 0, 0],
+                        bg: [fg_rgb.0, fg_rgb.1, fg_rgb.2, fg_a],
+                    });
+                };
+                if flags & attr::UNDERLINE != 0 {
+                    line((baseline + 2.0).min(ch - deco_thick), &mut out);
+                }
+                if flags & attr::STRIKETHROUGH != 0 {
+                    line((ch * 0.55).round(), &mut out);
+                }
+            }
         }
     }
 

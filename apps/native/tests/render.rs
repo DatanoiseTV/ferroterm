@@ -180,3 +180,73 @@ fn semantic_colors_render() {
     assert!(det_ok, "second render differed");
     assert_eq!(failed, 0, "{failed} color check(s) failed");
 }
+
+#[test]
+fn underline_and_strikethrough_draw_lines() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let baseline = atlas.baseline();
+    let (cols, rows) = (4usize, 1usize);
+
+    let mut term = Terminal::new(cols, rows, 100);
+    // col0: red underlined space (SGR 4). col1: green strikethrough space (SGR 9).
+    // Spaces so the only fg-colored pixels come from the decoration lines.
+    term.feed("\x1b[38;2;255;0;0;4m \x1b[0m\x1b[38;2;0;255;0;9m \x1b[0m".as_bytes());
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+    let px = render_readback(&device, &queue, &mut r, &mut atlas, &pal, &grid, w, h);
+
+    let at = |x: u32, y: u32| -> [u8; 3] {
+        let o = ((y * w + x) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2]]
+    };
+    let near = |got: [u8; 3], exp: (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        d(got[0], exp.0) <= 42 && d(got[1], exp.1) <= 42 && d(got[2], exp.2) <= 42
+    };
+
+    let underline_y = ((baseline + 2).min(ch as i32 - 1)) as u32;
+    let strike_y = (ch as f32 * 0.55).round() as u32;
+    let bg = (0x1a, 0x1b, 0x26);
+
+    // col0 underline row is red; the top of col0 is still background.
+    let ul = at(cw / 2, underline_y);
+    let ul_top = at(cw / 2, 1);
+    // col1 strike row is green; the top of col1 is still background.
+    let st = at(cw + cw / 2, strike_y);
+    let st_top = at(cw + cw / 2, 1);
+
+    type Check = (&'static str, [u8; 3], (u8, u8, u8));
+    let checks: &[Check] = &[
+        ("underline line = fg red", ul, (255, 0, 0)),
+        ("above underline = bg", ul_top, bg),
+        ("strike line = fg green", st, (0, 255, 0)),
+        ("above strike = bg", st_top, bg),
+    ];
+    let mut failed = 0;
+    for (name, got, exp) in checks {
+        let ok = near(*got, *exp);
+        eprintln!(
+            "  {} {}: got {:?} expected ~{:?}",
+            if ok { "PASS" } else { "FAIL" },
+            name,
+            got,
+            exp
+        );
+        if !ok {
+            failed += 1;
+        }
+    }
+    assert_eq!(failed, 0, "{failed} decoration check(s) failed");
+}

@@ -67,6 +67,11 @@ impl Atlas {
         ATLAS as u32
     }
 
+    /// Font baseline in pixels from the cell top (for underline placement).
+    pub fn baseline(&self) -> i32 {
+        self.baseline
+    }
+
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
