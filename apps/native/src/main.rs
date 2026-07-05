@@ -15,9 +15,10 @@ use ferroterm_native::atlas::Atlas;
 use ferroterm_native::images::{decode_image, ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
+use ferroterm_native::selection::{selected_text, Selection};
 use ferroterm_native::snapshot::Grid;
 use winit::application::ApplicationHandler;
-use winit::event::{MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
@@ -57,6 +58,15 @@ struct State {
     /// the bytes couldn't be decoded — cached either way so a given image is
     /// decoded (or rejected) once, not on every frame.
     decoded: HashMap<u32, Option<(u32, u32, Vec<u8>)>>,
+
+    /// Last known cursor position in device pixels (for hit-testing to a cell).
+    cursor_px: (f64, f64),
+    /// Active text selection (viewport cells), if any.
+    selection: Option<Selection>,
+    /// Mouse-drag selection anchor cell, set on press while dragging.
+    sel_anchor: Option<(usize, usize)>,
+    /// System clipboard, created lazily on first copy/paste.
+    clipboard: Option<arboard::Clipboard>,
 }
 
 /// One image resolved for this frame: id, source (texture) size, on-screen
@@ -176,6 +186,55 @@ impl State {
             origin_x: ox as f32,
             origin_y: oy as f32,
             decoded: HashMap::new(),
+            cursor_px: (0.0, 0.0),
+            selection: None,
+            sel_anchor: None,
+            clipboard: None,
+        }
+    }
+
+    /// Hit-test a device-pixel position to a viewport cell, clamped to the grid.
+    fn px_to_cell(&self, px: f64, py: f64) -> (usize, usize) {
+        let cx = ((px - self.origin_x as f64) / self.atlas.cell_w as f64).floor();
+        let cy = ((py - self.origin_y as f64) / self.atlas.cell_h as f64).floor();
+        let x = (cx.max(0.0) as usize).min(self.cols.saturating_sub(1));
+        let y = (cy.max(0.0) as usize).min(self.rows.saturating_sub(1));
+        (x, y)
+    }
+
+    /// Copy the current selection to the system clipboard.
+    fn copy_selection(&mut self) {
+        let Some(sel) = self.selection else { return };
+        let text = selected_text(&self.grid, &sel);
+        if text.is_empty() {
+            return;
+        }
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        if let Some(cb) = self.clipboard.as_mut() {
+            let _ = cb.set_text(text);
+        }
+    }
+
+    /// Paste clipboard text into the PTY (bracketed if the app enabled it).
+    fn paste_clipboard(&mut self) {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        let Some(text) = self.clipboard.as_mut().and_then(|c| c.get_text().ok()) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        self.term.scroll_to_bottom();
+        if self.term.modes().bracketed_paste {
+            self.pty.write(b"\x1b[200~");
+            self.pty.write(text.as_bytes());
+            self.pty.write(b"\x1b[201~");
+        } else {
+            self.pty.write(text.as_bytes());
         }
     }
 
@@ -195,6 +254,9 @@ impl State {
             .set_screen(w as f32, h as f32, ox as f32, oy as f32);
         self.origin_x = ox as f32;
         self.origin_y = oy as f32;
+        // Cell geometry changed under the selection; drop it.
+        self.selection = None;
+        self.sel_anchor = None;
         if cols != self.cols || rows != self.rows {
             self.cols = cols;
             self.rows = rows;
@@ -235,6 +297,7 @@ impl State {
             &mut self.atlas,
             true,
             self.palette.theme.bg,
+            self.selection.as_ref(),
         );
 
         // Inline images: draw RGBA placements over the cells. Raw Sixel / Kitty
@@ -351,6 +414,9 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 let n = lines.abs().round() as usize;
                 if n > 0 {
+                    // Scrolling invalidates the viewport-anchored selection.
+                    state.selection = None;
+                    state.sel_anchor = None;
                     if lines > 0.0 {
                         state.term.scroll_up_view(n);
                     } else {
@@ -359,11 +425,61 @@ impl ApplicationHandler<UserEvent> for App {
                     state.window.request_redraw();
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                state.cursor_px = (position.x, position.y);
+                if let Some(anchor) = state.sel_anchor {
+                    let cell = state.px_to_cell(position.x, position.y);
+                    let sel = Selection::new(anchor, cell);
+                    state.selection = (!sel.is_empty()).then_some(sel);
+                    state.window.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput {
+                state: btn,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Leave the mouse to the application when it enabled reporting.
+                if state.term.modes().mouse_mode != 0 {
+                    return;
+                }
+                match btn {
+                    ElementState::Pressed => {
+                        let (px, py) = state.cursor_px;
+                        state.sel_anchor = Some(state.px_to_cell(px, py));
+                        if state.selection.take().is_some() {
+                            state.window.request_redraw();
+                        }
+                    }
+                    ElementState::Released => state.sel_anchor = None,
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                // Copy/paste shortcuts intercepted before PTY encoding: Cmd on
+                // macOS, Ctrl+Shift elsewhere (plain Ctrl+C must reach the shell).
+                let copy_mod =
+                    state.mods.super_key() || (state.mods.control_key() && state.mods.shift_key());
+                if copy_mod {
+                    if let winit::keyboard::Key::Character(s) = &event.logical_key {
+                        if s.eq_ignore_ascii_case("c") {
+                            state.copy_selection();
+                            return;
+                        }
+                        if s.eq_ignore_ascii_case("v") {
+                            state.paste_clipboard();
+                            state.window.request_redraw();
+                            return;
+                        }
+                    }
+                }
                 let m = input::mods(state.mods);
                 let bytes =
                     input::encode(&event.logical_key, m, state.term.modes().app_cursor_keys);
                 if !bytes.is_empty() {
+                    // Typing clears the selection highlight.
+                    if state.selection.take().is_some() {
+                        state.window.request_redraw();
+                    }
                     state.term.scroll_to_bottom();
                     state.pty.write(&bytes);
                 }

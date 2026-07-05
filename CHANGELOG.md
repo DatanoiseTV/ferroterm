@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [native-0.4.0] - 2026-07-05
+
+### Added
+- **Mouse text selection and clipboard copy/paste** in the native app. Click-drag
+  selects a flow range of cells (highlighted with the theme's selection color via
+  a background override in the instance builder); Cmd+C (macOS) / Ctrl+Shift+C
+  (elsewhere) copies the selected text (trailing blanks trimmed, rows joined by
+  newline) to the system clipboard via `arboard`, and Cmd+V / Ctrl+Shift+V pastes
+  (bracketed when the app enabled it). Selection defers to the application when
+  it has mouse reporting on, and is cleared on scroll, resize or typing. New
+  `selection` module (normalized range, containment test, text extraction) with
+  unit tests; extraction and the highlight are covered by integration and
+  headless-render tests. Selection currently spans the visible viewport only —
+  extending across scrollback is a follow-up.
+
 ## [native-0.3.0] - 2026-07-05
 
 ### Changed

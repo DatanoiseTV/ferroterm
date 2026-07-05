@@ -7,4 +7,5 @@ pub mod atlas;
 pub mod images;
 pub mod palette;
 pub mod renderer;
+pub mod selection;
 pub mod snapshot;

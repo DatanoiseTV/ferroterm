@@ -191,10 +191,11 @@ Working: shell I/O, keyboard, 256-color + truecolor, wide/CJK cells,
 **bold/italic** (real font faces where the system provides them, synthetic
 shear/dilation otherwise), **underline/strikethrough**, **inline images** (Sixel
 and Kitty raw RGBA drawn directly; iTerm2 and Kitty encoded images —
-PNG/JPEG/GIF/BMP/WebP — decoded via the `image` crate), mouse-wheel scrollback,
-resize, a rounded-corner-safe inset. Follow-ups toward full parity: color emoji
-(a richer text stack — swash/cosmic-text), selection + clipboard, hyperlinks,
-cursor blink, and tabs/splits.
+PNG/JPEG/GIF/BMP/WebP — decoded via the `image` crate), **mouse selection +
+clipboard** (click-drag to select, Cmd/Ctrl+Shift+C/V to copy/paste),
+mouse-wheel scrollback, resize, a rounded-corner-safe inset. Follow-ups toward
+full parity: selection across scrollback, color emoji (a richer text stack —
+swash/cosmic-text), hyperlinks, cursor blink, and tabs/splits.
 
 ## Benchmarks
 

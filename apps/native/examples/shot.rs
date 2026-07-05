@@ -166,6 +166,7 @@ fn main() {
         &mut atlas,
         true,
         pal.theme.bg,
+        None,
     );
 
     // Inline images: draw the scene's RGBA placements over the cells.

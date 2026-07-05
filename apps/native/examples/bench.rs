@@ -99,16 +99,36 @@ fn bench_grid(
 
     // Warm up (rasterize the atlas, prime pipelines).
     for _ in 0..5 {
-        r.render(device, queue, &view, &grid, pal, atlas, true, pal.theme.bg);
+        r.render(
+            device,
+            queue,
+            &view,
+            &grid,
+            pal,
+            atlas,
+            true,
+            pal.theme.bg,
+            None,
+        );
         device.poll(wgpu::Maintain::Wait);
     }
 
     let decode_us = best_ms(200, 5, || grid.apply(&snap)) * 1000.0;
     let build_us = best_ms(100, 5, || {
-        let _ = build_instances(atlas, &grid, pal, true);
+        let _ = build_instances(atlas, &grid, pal, true, None);
     }) * 1000.0;
     let frame_ms = best_ms(60, 5, || {
-        r.render(device, queue, &view, &grid, pal, atlas, true, pal.theme.bg);
+        r.render(
+            device,
+            queue,
+            &view,
+            &grid,
+            pal,
+            atlas,
+            true,
+            pal.theme.bg,
+            None,
+        );
         device.poll(wgpu::Maintain::Wait);
     });
 

@@ -8,6 +8,7 @@ use ferroterm_native::atlas::Atlas;
 use ferroterm_native::images::{ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
+use ferroterm_native::selection::Selection;
 use ferroterm_native::snapshot::Grid;
 
 const FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -101,7 +102,17 @@ fn render_readback(
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     renderer.set_screen(queue, w as f32, h as f32, 0.0, 0.0);
-    renderer.render(device, queue, &view, grid, pal, atlas, true, pal.theme.bg);
+    renderer.render(
+        device,
+        queue,
+        &view,
+        grid,
+        pal,
+        atlas,
+        true,
+        pal.theme.bg,
+        None,
+    );
 
     // Copy to a buffer with a 256-aligned row stride, then repack tightly.
     let padded = (w * 4).div_ceil(256) * 256;
@@ -452,6 +463,7 @@ fn inline_rgba_image_draws_over_cells() {
         &mut atlas,
         false,
         pal.theme.bg,
+        None,
     );
 
     let mut layer = ImageLayer::new(&device, FMT);
@@ -548,6 +560,7 @@ fn kitty_image_renders_end_to_end() {
         &mut atlas,
         false,
         pal.theme.bg,
+        None,
     );
 
     // Mirror main.rs: turn placements into quads.
@@ -689,6 +702,7 @@ fn kitty_png_image_decodes_and_renders() {
         &mut atlas,
         false,
         pal.theme.bg,
+        None,
     );
 
     // Mirror main.rs: decode the encoded PNG, scale it into the placement box.
@@ -721,4 +735,79 @@ fn kitty_png_image_decodes_and_renders() {
         d(got[0], 255) <= 16 && d(got[1], 128) <= 16 && d(got[2], 0) <= 16,
         "decoded PNG did not render orange: {got:?}"
     );
+}
+
+#[test]
+fn selection_highlights_selected_cells() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (6usize, 1usize);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+
+    let mut term = Terminal::new(cols, rows, 100);
+    term.feed(b"ABCDEF");
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FMT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Select columns 1..=3.
+    let sel = Selection::new((1, 0), (3, 0));
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    r.set_screen(&queue, w as f32, h as f32, 0.0, 0.0);
+    r.render(
+        &device,
+        &queue,
+        &view,
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+        Some(&sel),
+    );
+
+    let px = readback(&device, &queue, &tex, w, h);
+    // Sample a glyph-free corner pixel of each cell (top-left) for its background.
+    let corner = |cx: usize| -> [u8; 3] {
+        let o = ((w + (cx as u32 * cw + 1)) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2]]
+    };
+    let near = |got: [u8; 3], exp: (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        d(got[0], exp.0) <= 8 && d(got[1], exp.1) <= 8 && d(got[2], exp.2) <= 8
+    };
+    let seln = pal.theme.selection;
+    let bg = (0x1a, 0x1b, 0x26);
+    eprintln!(
+        "  col0 {:?} col2 {:?} col5 {:?}",
+        corner(0),
+        corner(2),
+        corner(5)
+    );
+    assert!(near(corner(0), bg), "col0 is outside the selection → bg");
+    assert!(near(corner(2), seln), "col2 is selected → selection bg");
+    assert!(near(corner(5), bg), "col5 is outside the selection → bg");
 }

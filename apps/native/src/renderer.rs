@@ -9,6 +9,7 @@ use ferroterm_core::attr;
 
 use crate::atlas::Atlas;
 use crate::palette::Palette;
+use crate::selection::Selection;
 use crate::snapshot::Grid;
 
 #[repr(C)]
@@ -239,8 +240,9 @@ impl Renderer {
         atlas: &mut Atlas,
         cursor_on: bool,
         clear: (u8, u8, u8),
+        sel: Option<&Selection>,
     ) {
-        let inst = build_instances(atlas, grid, pal, cursor_on);
+        let inst = build_instances(atlas, grid, pal, cursor_on, sel);
         if atlas.dirty {
             self.upload_atlas(queue, atlas);
             atlas.dirty = false;
@@ -296,6 +298,7 @@ pub fn build_instances(
     grid: &Grid,
     pal: &Palette,
     cursor_on: bool,
+    sel: Option<&Selection>,
 ) -> Vec<Instance> {
     let cw = atlas.cell_w as f32;
     let ch = atlas.cell_h as f32;
@@ -318,7 +321,7 @@ pub fn build_instances(
             let has_glyph = c.cp != 0x20 && c.cp != 0 && flags & attr::INVISIBLE == 0;
             let has_deco = flags & (attr::UNDERLINE | attr::STRIKETHROUGH) != 0;
 
-            let (fg_rgb, bg_rgb, bg_a) = if inverse {
+            let (fg_rgb, mut bg_rgb, mut bg_a) = if inverse {
                 (
                     pal.resolve(c.bg, false, false),
                     pal.resolve(c.fg, true, bold),
@@ -336,6 +339,13 @@ pub fn build_instances(
                     if filled { 255 } else { 0 },
                 )
             };
+            // Selected cells get the selection background (opaque), so even a
+            // blank cell inside the selection is highlighted.
+            let selected = sel.is_some_and(|s| !s.is_empty() && s.contains(x, y));
+            if selected {
+                bg_rgb = pal.theme.selection;
+                bg_a = 255;
+            }
             if !has_glyph && bg_a == 0 && !has_deco {
                 continue;
             }

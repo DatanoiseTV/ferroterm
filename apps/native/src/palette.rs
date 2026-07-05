@@ -32,6 +32,8 @@ pub struct Theme {
     pub bg: (u8, u8, u8),
     pub cursor: (u8, u8, u8),
     pub cursor_text: (u8, u8, u8),
+    /// Background of selected cells (Tokyo Night selection blue).
+    pub selection: (u8, u8, u8),
 }
 
 impl Default for Theme {
@@ -41,6 +43,7 @@ impl Default for Theme {
             bg: (0x1a, 0x1b, 0x26),
             cursor: (0xe6, 0xe6, 0xe6),
             cursor_text: (0x1a, 0x1b, 0x26),
+            selection: (0x28, 0x3b, 0x5c),
         }
     }
 }
