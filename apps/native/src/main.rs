@@ -71,6 +71,8 @@ struct State {
     sel_anchor: Option<(usize, usize)>,
     /// System clipboard, created lazily on first copy/paste.
     clipboard: Option<arboard::Clipboard>,
+    /// OSC 8 hyperlink id under the mouse (0 = none), for hover underline.
+    hover_link: u32,
 
     /// Whether the window is focused (cursor is solid, not blinking, unfocused).
     focused: bool,
@@ -201,10 +203,58 @@ impl State {
             selection: None,
             sel_anchor: None,
             clipboard: None,
+            hover_link: 0,
             focused: true,
             blink_on: true,
             next_blink: Instant::now() + BLINK,
         }
+    }
+
+    /// Update the hovered hyperlink from the cell under the mouse, adjusting the
+    /// pointer icon and repainting when it changes.
+    fn update_hover(&mut self, px: f64, py: f64) {
+        let (x, y) = self.px_to_cell(px, py);
+        let link = if x < self.grid.cols && y < self.grid.rows {
+            self.grid.cell(x, y).link
+        } else {
+            0
+        };
+        if link != self.hover_link {
+            self.hover_link = link;
+            let icon = if link != 0 {
+                winit::window::CursorIcon::Pointer
+            } else {
+                winit::window::CursorIcon::Text
+            };
+            self.window.set_cursor(icon);
+            self.window.request_redraw();
+        }
+    }
+
+    /// Open the hovered hyperlink's URI in the OS default handler.
+    fn open_hovered_link(&self) {
+        if self.hover_link == 0 {
+            return;
+        }
+        let Some(uri) = self.term.link_uri(self.hover_link) else {
+            return;
+        };
+        // Only http(s)/file/mailto — never hand an arbitrary scheme to the shell.
+        let ok = ["http://", "https://", "mailto:", "file://"]
+            .iter()
+            .any(|p| uri.starts_with(p));
+        if !ok {
+            return;
+        }
+        let uri = uri.to_string();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&uri).spawn();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let _ = std::process::Command::new("xdg-open").arg(&uri).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &uri])
+            .spawn();
     }
 
     /// Reset the cursor to solid and restart the blink timer — called on any
@@ -322,6 +372,7 @@ impl State {
             cursor_on,
             self.palette.theme.bg,
             self.selection.as_ref(),
+            self.hover_link,
         );
 
         // Inline images: draw RGBA placements over the cells. Raw Sixel / Kitty
@@ -489,6 +540,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let sel = Selection::new(anchor, cell);
                     state.selection = (!sel.is_empty()).then_some(sel);
                     state.window.request_redraw();
+                } else {
+                    state.update_hover(position.x, position.y);
                 }
             }
             WindowEvent::MouseInput {
@@ -502,6 +555,14 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 match btn {
                     ElementState::Pressed => {
+                        // Cmd/Ctrl-click on a hyperlink opens it instead of
+                        // starting a selection.
+                        if (state.mods.super_key() || state.mods.control_key())
+                            && state.hover_link != 0
+                        {
+                            state.open_hovered_link();
+                            return;
+                        }
                         let (px, py) = state.cursor_px;
                         state.sel_anchor = Some(state.px_to_cell(px, py));
                         if state.selection.take().is_some() {

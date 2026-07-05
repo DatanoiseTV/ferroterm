@@ -241,8 +241,9 @@ impl Renderer {
         cursor_on: bool,
         clear: (u8, u8, u8),
         sel: Option<&Selection>,
+        hover_link: u32,
     ) {
-        let inst = build_instances(atlas, grid, pal, cursor_on, sel);
+        let inst = build_instances(atlas, grid, pal, cursor_on, sel, hover_link);
         if atlas.dirty {
             self.upload_atlas(queue, atlas);
             atlas.dirty = false;
@@ -299,6 +300,7 @@ pub fn build_instances(
     pal: &Palette,
     cursor_on: bool,
     sel: Option<&Selection>,
+    hover_link: u32,
 ) -> Vec<Instance> {
     let cw = atlas.cell_w as f32;
     let ch = atlas.cell_h as f32;
@@ -319,7 +321,10 @@ pub fn build_instances(
             let wide = flags & attr::WIDE != 0;
             let style = (bold as u8) | (((flags & attr::ITALIC != 0) as u8) << 1);
             let has_glyph = c.cp != 0x20 && c.cp != 0 && flags & attr::INVISIBLE == 0;
-            let has_deco = flags & (attr::UNDERLINE | attr::STRIKETHROUGH) != 0;
+            // A hovered hyperlink underlines its whole run, even cells that
+            // aren't otherwise underlined.
+            let link_hover = hover_link != 0 && c.link == hover_link;
+            let has_deco = flags & (attr::UNDERLINE | attr::STRIKETHROUGH) != 0 || link_hover;
 
             let (fg_rgb, mut bg_rgb, mut bg_a) = if inverse {
                 (
@@ -382,7 +387,7 @@ pub fn build_instances(
                         bg: [fg_rgb.0, fg_rgb.1, fg_rgb.2, fg_a],
                     });
                 };
-                if flags & attr::UNDERLINE != 0 {
+                if flags & attr::UNDERLINE != 0 || link_hover {
                     line((baseline + 2.0).min(ch - deco_thick), &mut out);
                 }
                 if flags & attr::STRIKETHROUGH != 0 {

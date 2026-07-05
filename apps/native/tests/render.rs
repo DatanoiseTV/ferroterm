@@ -112,6 +112,7 @@ fn render_readback(
         true,
         pal.theme.bg,
         None,
+        0,
     );
 
     // Copy to a buffer with a 256-aligned row stride, then repack tightly.
@@ -464,6 +465,7 @@ fn inline_rgba_image_draws_over_cells() {
         false,
         pal.theme.bg,
         None,
+        0,
     );
 
     let mut layer = ImageLayer::new(&device, FMT);
@@ -561,6 +563,7 @@ fn kitty_image_renders_end_to_end() {
         false,
         pal.theme.bg,
         None,
+        0,
     );
 
     // Mirror main.rs: turn placements into quads.
@@ -703,6 +706,7 @@ fn kitty_png_image_decodes_and_renders() {
         false,
         pal.theme.bg,
         None,
+        0,
     );
 
     // Mirror main.rs: decode the encoded PNG, scale it into the placement box.
@@ -787,6 +791,7 @@ fn selection_highlights_selected_cells() {
         false,
         pal.theme.bg,
         Some(&sel),
+        0,
     );
 
     let px = readback(&device, &queue, &tex, w, h);
@@ -868,6 +873,7 @@ fn cursor_visibility_follows_the_flag() {
         true,
         pal.theme.bg,
         None,
+        0,
     );
     let on_px = readback(&device, &queue, &on, w, h);
 
@@ -883,6 +889,7 @@ fn cursor_visibility_follows_the_flag() {
         false,
         pal.theme.bg,
         None,
+        0,
     );
     let off_px = readback(&device, &queue, &off, w, h);
 
@@ -899,5 +906,102 @@ fn cursor_visibility_follows_the_flag() {
     assert!(
         near(b, (0x1a, 0x1b, 0x26)),
         "cursor-off cell should show the background"
+    );
+}
+
+#[test]
+fn hovered_hyperlink_is_underlined() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let baseline = atlas.baseline();
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (6usize, 1usize);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+
+    // An OSC 8 hyperlink around the text "LINK".
+    let mut term = Terminal::new(cols, rows, 100);
+    term.feed(b"\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\");
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+    let link_id = grid.cell(0, 0).link;
+    assert!(link_id != 0, "OSC 8 link id should be set on the cell");
+
+    let make = || {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FMT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    };
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    r.set_screen(&queue, w as f32, h as f32, 0.0, 0.0);
+
+    // Underline row, sampled at the right edge of the 'L' cell (glyph-free there).
+    let uy = ((baseline + 2).min(ch as i32 - 1)) as u32;
+    let sx = cw - 1;
+    let at = |px: &[u8]| -> [u8; 3] {
+        let o = ((uy * w + sx) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2]]
+    };
+
+    let hov = make();
+    r.render(
+        &device,
+        &queue,
+        &hov.create_view(&Default::default()),
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+        None,
+        link_id,
+    );
+    let hov_px = readback(&device, &queue, &hov, w, h);
+
+    let plain = make();
+    r.render(
+        &device,
+        &queue,
+        &plain.create_view(&Default::default()),
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+        None,
+        0,
+    );
+    let plain_px = readback(&device, &queue, &plain, w, h);
+
+    let near = |got: [u8; 3], exp: (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        d(got[0], exp.0) <= 20 && d(got[1], exp.1) <= 20 && d(got[2], exp.2) <= 20
+    };
+    let (a, b) = (at(&hov_px), at(&plain_px));
+    eprintln!("  hover {a:?} (want fg underline), plain {b:?} (want bg)");
+    assert!(
+        near(a, pal.theme.fg),
+        "hovered link should draw an underline"
+    );
+    assert!(
+        near(b, (0x1a, 0x1b, 0x26)),
+        "un-hovered link has no underline"
     );
 }

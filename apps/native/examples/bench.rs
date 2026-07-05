@@ -109,13 +109,14 @@ fn bench_grid(
             true,
             pal.theme.bg,
             None,
+            0,
         );
         device.poll(wgpu::Maintain::Wait);
     }
 
     let decode_us = best_ms(200, 5, || grid.apply(&snap)) * 1000.0;
     let build_us = best_ms(100, 5, || {
-        let _ = build_instances(atlas, &grid, pal, true, None);
+        let _ = build_instances(atlas, &grid, pal, true, None, 0);
     }) * 1000.0;
     let frame_ms = best_ms(60, 5, || {
         r.render(
@@ -128,6 +129,7 @@ fn bench_grid(
             true,
             pal.theme.bg,
             None,
+            0,
         );
         device.poll(wgpu::Maintain::Wait);
     });

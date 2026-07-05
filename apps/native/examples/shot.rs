@@ -167,6 +167,7 @@ fn main() {
         true,
         pal.theme.bg,
         None,
+        0,
     );
 
     // Inline images: draw the scene's RGBA placements over the cells.

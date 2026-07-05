@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [native-0.6.0] - 2026-07-05
+
+### Added
+- **OSC 8 hyperlinks** in the native app. Moving the mouse over a linked cell
+  underlines the whole link run (via the instance builder's decoration path) and
+  switches the pointer to a hand; Cmd-click (macOS) or Ctrl-click opens the URI
+  in the OS default handler. Only `http(s)`, `mailto` and `file` schemes are
+  opened — an unknown scheme is never handed to a shell. A headless render test
+  asserts a hovered link draws an underline while an un-hovered one does not.
+
 ## [native-0.5.0] - 2026-07-05
 
 ### Added
