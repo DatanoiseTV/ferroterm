@@ -229,7 +229,7 @@ function findParent(node, target) {
 // Fit + spawn are deferred one frame so the flexbox layout has settled and the
 // PTY is created at the real terminal size (not a 2-row sliver at boot).
 function renderTree(tab) {
-  tab.container.innerHTML = '';
+  tab.container.replaceChildren();
   tab.container.appendChild(buildNode(tab, tab.root));
   for (const l of leaves(tab.root)) {
     if (!l.session.term.attached) l.session.term.attachView(l.el);
@@ -331,12 +331,20 @@ function openFind() {
   if (!term) return;
   const bar = document.createElement('div');
   bar.className = 'find-bar';
-  bar.innerHTML =
-    '<input placeholder="Find" /><span class="count"></span>' +
-    '<button data-a="prev">↑</button><button data-a="next">↓</button><button data-a="close">✕</button>';
+  const input = document.createElement('input');
+  input.placeholder = 'Find';
+  const count = document.createElement('span');
+  count.className = 'count';
+  const button = (label) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    return b;
+  };
+  const prevBtn = button('↑');
+  const nextBtn = button('↓');
+  const closeBtn = button('✕');
+  bar.append(input, count, prevBtn, nextBtn, closeBtn);
   document.body.appendChild(bar);
-  const input = bar.querySelector('input');
-  const count = bar.querySelector('.count');
   findState = { bar, input, count, term, matches: [], idx: -1 };
   input.focus();
 
@@ -360,9 +368,9 @@ function openFind() {
     if (e.key === 'Enter') step(e.shiftKey ? -1 : 1);
     else if (e.key === 'Escape') closeFind();
   });
-  bar.querySelector('[data-a="next"]').addEventListener('click', () => step(1));
-  bar.querySelector('[data-a="prev"]').addEventListener('click', () => step(-1));
-  bar.querySelector('[data-a="close"]').addEventListener('click', () => closeFind());
+  nextBtn.addEventListener('click', () => step(1));
+  prevBtn.addEventListener('click', () => step(-1));
+  closeBtn.addEventListener('click', () => closeFind());
 }
 function closeFind() {
   if (!findState) return;
@@ -432,9 +440,10 @@ async function pollBattery() {
       return;
     }
     const pct = Math.round(b.percent);
-    hudBattery.innerHTML = `${b.charging ? '⚡' : ''}<b>${pct}%</b>${
-      b.seconds_remaining ? ' · ' + fmtTime(b.seconds_remaining) : ''
-    }`;
+    const strong = document.createElement('b');
+    strong.textContent = `${pct}%`;
+    hudBattery.replaceChildren(...(b.charging ? ['⚡'] : []), strong);
+    if (b.seconds_remaining) hudBattery.append(` · ${fmtTime(b.seconds_remaining)}`);
     hudBattery.classList.toggle('low', pct <= 20 && !b.charging);
   } catch {
     hudBattery.textContent = '';
@@ -486,7 +495,15 @@ function showMenu(x, y, items) {
     }
     const el = document.createElement('div');
     el.className = 'item' + (item.enabled === false ? ' disabled' : '');
-    el.innerHTML = `<span>${item.label}</span>${item.accel ? `<span class="accel">${item.accel}</span>` : ''}`;
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    el.append(label);
+    if (item.accel) {
+      const accel = document.createElement('span');
+      accel.className = 'accel';
+      accel.textContent = item.accel;
+      el.append(accel);
+    }
     if (item.enabled !== false) {
       el.addEventListener('mousedown', (e) => {
         e.preventDefault();

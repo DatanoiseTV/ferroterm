@@ -88,18 +88,21 @@
 
     // GPU banner — reveals whether we're on real silicon or a software fallback.
     const gpu = gpuInfo();
-    if (!gpu) {
-      $('gpu').innerHTML = '<b>WebGL unavailable</b> — only the Canvas2D renderer can be measured.';
-    } else {
-      const tag = gpu.software
-        ? '<span class="sw">software rasterizer</span>'
-        : '<span class="hw">hardware GPU</span>';
-      $('gpu').innerHTML =
-        `GPU: <b>${esc(gpu.renderer)}</b> &nbsp;·&nbsp; ${tag}` +
-        (gpu.software
-          ? '<br><span class="sw">Note: SwiftShader/llvmpipe run on the CPU. WebGL will look ' +
-            'far slower here than on real hardware; treat these as a lower bound.</span>'
-          : '');
+    {
+      const box = $('gpu');
+      box.replaceChildren();
+      if (!gpu) {
+        box.append(el('b', null, 'WebGL unavailable'), ' — only the Canvas2D renderer can be measured.');
+      } else {
+        const tag = el('span', gpu.software ? 'sw' : 'hw',
+          gpu.software ? 'software rasterizer' : 'hardware GPU');
+        box.append('GPU: ', el('b', null, gpu.renderer), ' · ', tag);
+        if (gpu.software) {
+          box.append(document.createElement('br'), el('span', 'sw',
+            'Note: SwiftShader/llvmpipe run on the CPU. WebGL will look far slower here ' +
+            'than on real hardware; treat these as a lower bound.'));
+        }
+      }
     }
 
     const q = new URLSearchParams(location.search);
@@ -119,7 +122,7 @@
     async function run() {
       btn.disabled = true;
       $('status').textContent = 'measuring… (a few seconds)';
-      $('out').innerHTML = '';
+      $('out').replaceChildren();
       // Yield so the disabled state / status paint before the blocking loops.
       await new Promise((r) => setTimeout(r, 30));
 
@@ -147,64 +150,65 @@
       btn.disabled = false;
     }
 
+    // Tiny DOM builder: element with an optional class and string/Node children.
+    function el(tag, className, ...children) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      for (const c of children) if (c != null) node.append(c);
+      return node;
+    }
+    // Cell content helpers: a numeric span, a dim note, and a bold run.
+    const num = (...kids) => el('span', 'num', ...kids);
+    const dim = (s) => el('span', 'dim', s);
+    const bold = (s) => el('b', null, s);
+
     function renderTables(r) {
       const out = $('out');
+      out.replaceChildren();
       const ms = (x) => x.toFixed(3);
       const fps = (x) => (1000 / x).toFixed(0);
 
       // Renderer paint.
-      let h = '<h2>renderer paint — full ' + r.cols + '×' + r.rows +
-        ' redraw (render() only)</h2>';
-      h += table(['renderer', 'render time', 'fps'],
-        r.paint.map((p) => [p.kind, td(ms(p.best) + ' ms'), td(fps(p.best) + ' fps')]));
+      out.append(el('h2', null, `renderer paint — full ${r.cols}×${r.rows} redraw (render() only)`));
+      out.append(table(['renderer', 'render time', 'fps'],
+        r.paint.map((p) => [p.kind, num(ms(p.best) + ' ms'), num(fps(p.best) + ' fps')])));
 
       // Pipeline breakdown, per renderer.
       for (const kind of ['canvas', 'webgl']) {
         const p = r.pipeline[kind];
         if (!p) continue;
         const pct = (x) => ((x / p.frame) * 100).toFixed(0) + '%';
-        h += '<h2>per-frame pipeline — ' + p.kind + '</h2>';
-        h += table(['stage', 'time', 'share', ''], [
-          ['snapshot (wasm)', td(ms(p.snap) + ' ms'), pct(p.snap), dim('zero-copy view')],
-          ['applySnapshot (JS)', td(ms(p.apply) + ' ms'), pct(p.apply), dim('de-interleave')],
-          ['render (' + p.kind + ')', td(ms(p.render) + ' ms'), pct(p.render), dim('paint')],
-          ['<b>full frame</b>', td('<b>' + ms(p.frame) + ' ms</b>'), td('<b>' + fps(p.frame) + ' fps</b>'), ''],
-        ]);
+        out.append(el('h2', null, `per-frame pipeline — ${p.kind}`));
+        out.append(table(['stage', 'time', 'share', ''], [
+          ['snapshot (wasm)', num(ms(p.snap) + ' ms'), pct(p.snap), dim('zero-copy view')],
+          ['applySnapshot (JS)', num(ms(p.apply) + ' ms'), pct(p.apply), dim('de-interleave')],
+          [`render (${p.kind})`, num(ms(p.render) + ' ms'), pct(p.render), dim('paint')],
+          [bold('full frame'), num(bold(ms(p.frame) + ' ms')), num(bold(fps(p.frame) + ' fps')), ''],
+        ]));
       }
 
       // Incremental WebGL.
       if (r.incremental) {
         const i = r.incremental;
         const speedup = (x) => (i.full / x).toFixed(0) + '×';
-        h += '<h2>incremental WebGL — cost by dirty region</h2>';
-        h += table(['frame kind', 'render time', 'vs full'], [
-          ['full repaint', td(ms(i.full) + ' ms'), dim('1×')],
-          ['one dirty row (typing)', td(ms(i.oneRow) + ' ms'), td(speedup(i.oneRow))],
-          ['no grid change (cursor blink)', td(ms(i.cursorOnly) + ' ms'), td(speedup(i.cursorOnly))],
-        ]);
+        out.append(el('h2', null, 'incremental WebGL — cost by dirty region'));
+        out.append(table(['frame kind', 'render time', 'vs full'], [
+          ['full repaint', num(ms(i.full) + ' ms'), dim('1×')],
+          ['one dirty row (typing)', num(ms(i.oneRow) + ' ms'), num(speedup(i.oneRow))],
+          ['no grid change (cursor blink)', num(ms(i.cursorOnly) + ' ms'), num(speedup(i.cursorOnly))],
+        ]));
       }
-
-      out.innerHTML = h;
     }
 
-    const td = (s) => '<span class="num">' + s + '</span>';
-    const dim = (s) => '<span class="dim">' + s + '</span>';
+    // A table from a header row and body rows; each cell is a string or Node.
+    // Every column but the first gets the numeric alignment class.
     function table(head, rows) {
-      let h = '<table><thead><tr>';
-      for (const c of head) h += '<th>' + c + '</th>';
-      h += '</tr></thead><tbody>';
+      const thead = el('thead', null, el('tr', null, ...head.map((c) => el('th', null, c))));
+      const tbody = document.createElement('tbody');
       for (const row of rows) {
-        h += '<tr>';
-        row.forEach((cell, i) => {
-          const cls = i === 0 ? '' : ' class="num"';
-          h += (i === 0 ? '<td>' : '<td' + cls + '>') + cell + '</td>';
-        });
-        h += '</tr>';
+        tbody.append(el('tr', null, ...row.map((cell, i) => el('td', i === 0 ? null : 'num', cell))));
       }
-      return h + '</tbody></table>';
-    }
-    function esc(s) {
-      return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      return el('table', null, thead, tbody);
     }
 
     // Auto-run for headless verification: ?auto
