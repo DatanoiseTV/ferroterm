@@ -4,6 +4,44 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **DOM renderer** for the web component (`renderer: 'dom'`), a third renderer
+  alongside WebGL and Canvas2D, in the spirit of xterm.js's DOM renderer: each
+  grid row is one `<div>` and adjacent same-style cells coalesce into a single
+  `<span>` (run-length), with the cursor as a separate absolutely-positioned
+  overlay. It renders through the browser's own text stack — crisp at any DPR
+  with no glyph atlas, color emoji for free, inspectable in devtools — at the
+  cost of being the slowest renderer (measured ~1.6× a full Canvas2D repaint,
+  the same reason xterm.js defaults away from it). Selection is blended to an
+  opaque cell background so text stays crisp; dim uses per-glyph alpha. Exposed
+  via the `renderer` option / attribute, `setRenderer('dom')`, the demo's
+  renderer dropdown, and the `DomRenderer` export. The headless render
+  regression test now covers all three renderers (computed span styles for the
+  DOM one), and `examples/benchmark.html` times it too.
+- **`apps/slint` rasterizer benchmark** (`cargo run --release --example bench`):
+  parse throughput, snapshot-decode cost and full-frame raster time (warm and
+  cold glyph cache) across grid sizes. The `Image`-renderer path is fill-bound
+  at ~1.3 Gpx/s and clears 60 fps warm at every realistic terminal size.
+
+## [slint-0.1.0] - 2026-07-05
+
+### Added
+- **`apps/slint`** — a native terminal front-end built on `ferroterm-core` with
+  a [Slint](https://slint.dev) UI, alongside the existing web, Tauri and wgpu
+  front-ends. Since Slint has no raw per-pixel canvas element, the grid is
+  software-rasterized (fontdue, mirroring the native app's face discovery and
+  synthetic bold/italic) into an RGBA `SharedPixelBuffer` shown as one `Image`;
+  a `FocusScope` forwards keystrokes through `ferroterm-core`'s encoder (arrows,
+  F-keys, Home/End, PageUp/Down mapped from Slint's key codepoints), and
+  `portable-pty` runs the shell. Colors and the Tokyo Night theme are shared
+  with the other front-ends. Supports 256-color/truecolor, wide/CJK cells,
+  bold/italic/underline/strikethrough/inverse/dim, a blinking block cursor, live
+  resize and HiDPI. A headless integration test drives the decode + rasterize
+  pipeline (grid decoding, wide-spacer marking, and pixel-asserted foreground-
+  over-background compositing) without opening a window.
+
 ## [0.8.0] - 2026-07-05
 
 ### Added

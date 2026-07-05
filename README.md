@@ -1,8 +1,8 @@
 # ferroterm
 
 A fast, secure terminal emulator **core** written from scratch in Rust, compiled
-to WebAssembly, and wrapped in a small, dependency-free web component with both
-**Canvas2D** and **WebGL** renderers.
+to WebAssembly, and wrapped in a small, dependency-free web component with
+**WebGL**, **Canvas2D** and **DOM** renderers.
 
 <p align="center">
   <img src="docs/screenshots/web-demo.png" width="880"
@@ -50,15 +50,20 @@ and captures input.
   Kitty raw pixels are handled in the Rust core; iTerm2/Kitty PNGs are decoded
   natively by the browser (`createImageBitmap`), so no image codec is linked into
   the WASM.
-- **Two renderers, swappable at runtime**: a Canvas2D renderer that redraws only
-  dirty rows, and a WebGL renderer with a dynamic glyph atlas. The WebGL renderer
-  keeps a persistent per-cell GPU buffer and re-uploads only the rows that
+- **Three renderers, swappable at runtime**: a Canvas2D renderer that redraws only
+  dirty rows, a WebGL renderer with a dynamic glyph atlas, and a DOM renderer
+  (real `<span>` elements, in the spirit of xterm.js's DOM renderer). The WebGL
+  renderer keeps a persistent per-cell GPU buffer and re-uploads only the rows that
   changed, drawing the whole grid in one instanced call (one instance per cell,
   background and glyph composited in the shader) with cursor and decorations in a
   small overlay pass that visits only decorated rows. A one-row edit repaints a
   fraction of a full frame (~35× cheaper at 200×50) and a cursor-blink frame is
   essentially free (below a 100 µs timer's resolution), pixel-identical to a full
-  re-render. WebGL falls back to Canvas2D when unavailable.
+  re-render. WebGL falls back to Canvas2D when unavailable. The DOM renderer is
+  the slowest (measured ~1.6× a full Canvas2D repaint — the same reason xterm.js
+  defaults away from it) but needs no canvas/WebGL, renders through the browser's
+  own text stack (crisp at any DPR, color emoji for free), and is trivially
+  inspectable in devtools.
 - **Reusable component**: `Ferroterm.create(el, opts)`, `onData` / `write`,
   theming, mouse/word/line selection, right-click menu, clipboard, bracketed
   paste, find, scrollback. Ships TypeScript types. No runtime dependencies.
@@ -79,6 +84,8 @@ and captures input.
 | `web/` | the JS/TS component (renderers, input, links) + `.d.ts` |
 | `examples/` | a no-backend browser demo |
 | `apps/desktop/` | the Tauri tabbed-terminal application |
+| `apps/native/` | the native GPU terminal (winit + wgpu, no webview) |
+| `apps/slint/` | a native terminal with a Slint UI (software-rasterized) |
 | `build.sh` | builds the WASM module into `web/pkg` |
 
 ## Quick start (web component)
@@ -146,7 +153,7 @@ Switch renderers live: `term.setRenderer('canvas')`. Re-theme:
 ### Options
 
 `cols`, `rows`, `scrollback`, `fontFamily`, `fontSize`, `lineHeight`,
-`renderer` (`'webgl'`|`'canvas'`), `theme`, `cursorStyle`
+`renderer` (`'webgl'`|`'canvas'`|`'dom'`), `theme`, `cursorStyle`
 (`'block'`|`'bar'`|`'underline'`), `cursorBlink`, `scrollSensitivity`,
 `autoFit`, `copyOnSelect`, `onLink`, `wasmUrl`. See `web/ferroterm.d.ts`.
 
@@ -225,6 +232,29 @@ open), mouse-wheel and Shift+PageUp/PageDown scrollback, resize, a
 rounded-corner-safe inset. Follow-ups toward full parity: color emoji (a richer
 text stack — swash/cosmic-text) and tabs/splits.
 
+## Slint app
+
+The same core behind a [Slint](https://slint.dev) UI instead of wgpu. Slint has
+no raw per-pixel canvas element, so rather than one live element per cell (the
+wrong shape for a grid) the terminal is **software-rasterized** (fontdue) into an
+RGBA buffer shown as a single Slint `Image`; a `FocusScope` forwards keystrokes
+through `ferroterm-core`'s encoder, and `portable-pty` runs the shell. Colors,
+key encoding and the Tokyo Night theme are shared with the other front-ends, so
+a shell looks the same here as in the browser or the wgpu app.
+
+```bash
+cd apps/slint
+cargo run --release   # opens a Slint window running your $SHELL
+cargo test            # headless: decode + rasterize pipeline, pixel-asserted
+```
+
+Working: shell I/O, keyboard (incl. arrows/F-keys/Home/End/PageUp-Down),
+256-color + truecolor, wide/CJK cells, bold/italic (real faces where available,
+synthetic otherwise), underline/strikethrough, inverse/dim, a blinking block
+cursor, live resize and HiDPI. It is a compact reference for embedding the core
+in a non-web GUI toolkit — mouse selection, scrollback viewing and inline images
+are intentionally left to the fuller native app.
+
 ## Benchmarks
 
 ```bash
@@ -272,13 +302,37 @@ palette, search and links built in — versus xterm.js's 68 KB core alone or
 ecosystem, years of production hardening); the doc is honest about the
 trade-offs.
 
+### Slint renderer (software rasterizer)
+
+`cargo run --release --example bench` in `apps/slint/` measures the CPU
+rasterizer that backs the Slint app's `Image` renderer (its entire per-frame
+cost — Slint then just uploads the finished buffer). On an **Apple-silicon
+laptop**, 16 px Retina cells (physical-pixel buffer):
+
+| grid | cells | buffer | raster (warm) | (cold cache) | frame | fill |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 80×24 | 1,920 | 1600×912 | 1.11 ms | 15.8 ms | ~900 fps | 1.3 Gpx/s |
+| 120×40 | 4,800 | 2400×1520 | 2.89 ms | 17.6 ms | ~350 fps | 1.3 Gpx/s |
+| 200×50 | 10,000 | 4000×1900 | 6.10 ms | 20.8 ms | ~165 fps | 1.2 Gpx/s |
+| 300×80 | 24,000 | 6000×3040 | 14.5 ms | 28.9 ms | ~70 fps | 1.3 Gpx/s |
+
+The single-threaded rasterizer is **fill-bound** (~1.3 Gpx/s of background +
+glyph compositing regardless of grid size); snapshot decode is negligible
+(microseconds). Every realistic terminal size clears 60 fps warm; the **cold
+cache** column is the one-time cost of rasterizing every glyph on the first
+frame (a startup hitch, then cached). It redraws the whole frame on any change —
+a dirty-row partial upload is the obvious follow-up (the wgpu app already does
+this).
+
 In the browser, the demo's `benchmark` command prints parse throughput, per-
 renderer paint time and a per-frame pipeline breakdown (snapshot → applySnapshot
-→ render); `loadtest` measures end-to-end (parse + render) MB/s the way the
-xterm.js demo does. [`examples/benchmark.html`](examples/benchmark.html) is a
-standalone page that reports the detected GPU (real hardware vs a software
-fallback), then the same render / pipeline / incremental timings as tables plus
-copyable JSON.
+→ render) for **all three** renderers; `loadtest` measures end-to-end (parse +
+render) MB/s the way the xterm.js demo does. On headless SwiftShader a full
+100×29 redraw measured ~0.05 ms (WebGL, CPU submit only) / 2.5 ms (Canvas2D) /
+4.0 ms (DOM) — the DOM renderer trailing, as expected.
+[`examples/benchmark.html`](examples/benchmark.html) is a standalone page that
+reports the detected GPU (real hardware vs a software fallback), then the same
+render / pipeline / incremental timings as tables plus copyable JSON.
 
 ## Testing
 
@@ -296,8 +350,9 @@ placement, DSR/DA replies, and a fuzz-style "malicious input must not panic/hang
 case.
 
 The renderer tests (`web/test/`, `CHROME_BIN` overridable) render a feature-rich
-scene through **both** renderers in headless Chrome and assert semantic per-cell
-pixel colors, same-renderer determinism, WebGL incremental-vs-full parity, and
+scene through **all three** renderers in headless Chrome and assert semantic
+per-cell colors (sampled pixels for Canvas2D/WebGL, computed span styles for the
+DOM renderer), same-renderer determinism, WebGL incremental-vs-full parity, and
 that an iTerm2 inline image decodes and draws to the exact expected pixel. CI
 runs `cargo fmt --check` + `clippy -D warnings` + `cargo test` and this suite.
 
