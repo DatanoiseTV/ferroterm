@@ -81,6 +81,9 @@ void main() {
 const WORDS_PER_INSTANCE = 11;
 const F_RECT = 0, F_TEX = 4, F_TINT = 8, U_FG = 9, U_BG = 10;
 
+// Cell flags that put a quad in the overlay pass (underline / strikethrough).
+const DECO = ATTR.UNDERLINE | ATTR.STRIKETHROUGH;
+
 // Pack r,g,b (0..255) and a (0..255) into 0xAABBGGRR for a normalized
 // UNSIGNED_BYTE vec4 (little-endian -> byte0=r ... byte3=a).
 function packRGBA(r, g, b, a) {
@@ -229,6 +232,9 @@ export class WebGLRenderer {
     this.ovF = new Float32Array(this.ovAB);
     this.ovU = new Uint32Array(this.ovAB);
     this.ovBytes = new Uint8Array(this.ovAB);
+    // Which rows contain an underline/strike cell. Maintained as rows are
+    // regenerated so the overlay pass scans only decorated rows, not every cell.
+    this._rowHasDeco = new Uint8Array(model.rows);
 
     this._gridFull = true; // force a full grid rebuild + upload next render
     this._prevSel = null;
@@ -441,10 +447,12 @@ export class WebGLRenderer {
       sel && selection && y >= selection.sy && y <= selection.ey
         ? this._selSpan(selection, y, cols) : null;
 
+    let rowDeco = 0;
     for (let x = 0; x < cols; x++) {
       const i = base + x;
       const o = i * WORDS_PER_INSTANCE;
       const flags = flagsA[i];
+      rowDeco |= flags;
       if (flags & ATTR.WIDE_SPACER) { f[o + F_RECT + 2] = 0; f[o + F_RECT + 3] = 0; continue; }
       const inverse = (flags & ATTR.INVERSE) !== 0;
       const cp = cpA[i];
@@ -491,6 +499,7 @@ export class WebGLRenderer {
       const w = flags & ATTR.WIDE ? cw * 2 : cw;
       this._writeInst(f, u, o, x * cw, yc, w, ch, fgP, bgP, glyph, tint);
     }
+    this._rowHasDeco[y] = rowDeco & DECO ? 1 : 0;
   }
 
   // Cursor + underline/strike + hover-link, drawn over the grid. Decorations are
@@ -501,11 +510,14 @@ export class WebGLRenderer {
     const pal = this.palette;
     const flagsA = model.flags, fgA = model.fg, bgA = model.bg, cpA = model.cp;
     const t = Math.max(1, Math.round(this.metrics.dpr));
-    const DECO = ATTR.UNDERLINE | ATTR.STRIKETHROUGH;
+    const rowHasDeco = this._rowHasDeco;
     for (let y = 0; y < rows; y++) {
+      const hoverRow = hoverLink && hoverLink.y === y;
+      // Skip rows with no decoration and no hover — the common case, so a
+      // cursor-blink / typing frame never scans the whole grid.
+      if (!rowHasDeco[y] && !hoverRow) continue;
       const base = y * cols;
       const yc = y * ch;
-      const hoverRow = hoverLink && hoverLink.y === y;
       for (let x = 0; x < cols; x++) {
         const i = base + x;
         const flags = flagsA[i];
