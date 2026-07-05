@@ -12,6 +12,42 @@ use ferroterm_native::snapshot::Grid;
 
 const FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+/// Standard base64 (with padding), the encoding Kitty uses on the wire.
+fn b64(data: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if c.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Encode RGBA pixels as a PNG file (via the `png` crate).
+fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(rgba).unwrap();
+    }
+    out
+}
+
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY | wgpu::Backends::GL,
@@ -423,10 +459,12 @@ fn inline_rgba_image_draws_over_cells() {
     let magenta: Vec<u8> = (0..iw * ih).flat_map(|_| [255u8, 0, 255, 255]).collect();
     let quad = ImageQuad {
         id: 1,
-        w: iw,
-        h: ih,
+        src_w: iw,
+        src_h: ih,
         x: 12.0,
         y: 8.0,
+        w: iw as f32,
+        h: ih as f32,
         rgba: &magenta,
     };
     layer.render(&device, &queue, &view, &[quad]);
@@ -464,29 +502,6 @@ fn kitty_image_renders_end_to_end() {
 
     // Feed a real Kitty RGBA image to the terminal, then build image quads the
     // same way the app's render loop does (placements -> rgba -> quads).
-    fn b64(data: &[u8]) -> String {
-        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for c in data.chunks(3) {
-            let n = (c[0] as u32) << 16
-                | (*c.get(1).unwrap_or(&0) as u32) << 8
-                | *c.get(2).unwrap_or(&0) as u32;
-            out.push(T[(n >> 18 & 63) as usize] as char);
-            out.push(T[(n >> 12 & 63) as usize] as char);
-            out.push(if c.len() > 1 {
-                T[(n >> 6 & 63) as usize] as char
-            } else {
-                '='
-            });
-            out.push(if c.len() > 2 {
-                T[(n & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-        out
-    }
-
     let mut atlas = Atlas::new(16.0);
     let pal = Palette::new(Theme::default());
     let (cw, ch) = (atlas.cell_w, atlas.cell_h);
@@ -556,10 +571,12 @@ fn kitty_image_renders_end_to_end() {
         .iter()
         .map(|(id, pw, ph, x, y, rgba)| ImageQuad {
             id: *id,
-            w: *pw,
-            h: *ph,
+            src_w: *pw,
+            src_h: *ph,
             x: *x,
             y: *y,
+            w: *pw as f32,
+            h: *ph as f32,
             rgba,
         })
         .collect();
@@ -579,5 +596,110 @@ fn kitty_image_renders_end_to_end() {
     assert!(
         d(inside[0], 0) <= 12 && d(inside[1], 255) <= 12 && d(inside[2], 255) <= 12,
         "kitty image did not render cyan: {inside:?}"
+    );
+}
+
+#[test]
+fn decode_png_roundtrips_rgba() {
+    // 4x4 solid RGBA encoded then decoded should come back byte-identical.
+    let rgba: Vec<u8> = (0..16).flat_map(|_| [200u8, 40, 60, 255]).collect();
+    let png = encode_png(4, 4, &rgba);
+    let (w, h, out) = ferroterm_native::images::decode_png(&png).expect("decode");
+    assert_eq!((w, h), (4, 4));
+    assert_eq!(out, rgba, "decoded RGBA must match the source");
+}
+
+#[test]
+fn kitty_png_image_decodes_and_renders() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("SKIP: no GPU adapter available");
+        return;
+    };
+
+    let mut atlas = Atlas::new(16.0);
+    let pal = Palette::new(Theme::default());
+    let (cw, ch) = (atlas.cell_w, atlas.cell_h);
+    let (cols, rows) = (10usize, 6usize);
+    let (w, h) = (cw * cols as u32, ch * rows as u32);
+
+    // A solid-orange PNG transmitted as a Kitty f=100 image (encoded path).
+    let (iw, ih) = (24u32, 24u32);
+    let orange: Vec<u8> = (0..iw * ih).flat_map(|_| [255u8, 128, 0, 255]).collect();
+    let png = encode_png(iw, ih, &orange);
+    let mut term = Terminal::new(cols, rows, 100);
+    term.feed(format!("\x1b_Ga=T,f=100;{}\x1b\\", b64(&png)).as_bytes());
+
+    // The core stores it as an encoded image (no RGBA); the native app decodes.
+    let ids = term.image_ids();
+    assert_eq!(ids.len(), 1);
+    assert!(
+        term.image_rgba(ids[0]).is_empty(),
+        "PNG has no core-side RGBA"
+    );
+    assert_eq!(term.image_mime(ids[0]), "image/png");
+
+    let mut grid = Grid::default();
+    let mut snap = Vec::new();
+    term.snapshot_into(true, &mut snap);
+    grid.apply(&snap);
+
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FMT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut r = Renderer::new(&device, &queue, FMT, &atlas);
+    r.set_screen(&queue, w as f32, h as f32, 0.0, 0.0);
+    r.render(
+        &device,
+        &queue,
+        &view,
+        &grid,
+        &pal,
+        &mut atlas,
+        false,
+        pal.theme.bg,
+    );
+
+    // Mirror main.rs: decode the encoded PNG, scale it into the placement box.
+    let placements = term.image_placements();
+    let p = &placements[0..5];
+    let (id, _row, _col, pw, ph) = (p[0] as u32, p[1], p[2], p[3] as u32, p[4] as u32);
+    let (dw, dh, drgba) =
+        ferroterm_native::images::decode_png(&term.image_encoded(id)).expect("decode png");
+    let quad = ImageQuad {
+        id,
+        src_w: dw,
+        src_h: dh,
+        x: 0.0,
+        y: 0.0,
+        w: pw as f32,
+        h: ph as f32,
+        rgba: &drgba,
+    };
+
+    let mut layer = ImageLayer::new(&device, FMT);
+    layer.set_screen(w as f32, h as f32, 0.0, 0.0);
+    layer.render(&device, &queue, &view, &[quad]);
+
+    let px = readback(&device, &queue, &tex, w, h);
+    let o = ((4 * w + 4) * 4) as usize; // inside the image near the top-left
+    let got = [px[o], px[o + 1], px[o + 2]];
+    eprintln!("  kitty PNG inside pixel {got:?} (want orange 255,128,0)");
+    let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+    assert!(
+        d(got[0], 255) <= 16 && d(got[1], 128) <= 16 && d(got[2], 0) <= 16,
+        "decoded PNG did not render orange: {got:?}"
     );
 }

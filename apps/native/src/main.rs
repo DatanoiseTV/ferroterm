@@ -7,11 +7,12 @@
 mod input;
 mod pty;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ferroterm_core::Terminal;
 use ferroterm_native::atlas::Atlas;
-use ferroterm_native::images::{ImageLayer, ImageQuad};
+use ferroterm_native::images::{decode_png, ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
 use ferroterm_native::snapshot::Grid;
@@ -52,6 +53,22 @@ struct State {
     /// Kept in sync with the renderer so inline images align with the text.
     origin_x: f32,
     origin_y: f32,
+    /// Decoded encoded images (iTerm2 / Kitty PNG) by image id → (w, h, rgba),
+    /// so a PNG is decoded once and not on every frame.
+    decoded: HashMap<u32, (u32, u32, Vec<u8>)>,
+}
+
+/// One image resolved for this frame: id, source (texture) size, on-screen
+/// position and draw size, and owned RGBA pixels.
+struct ImgFrame {
+    id: u32,
+    sw: u32,
+    sh: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rgba: Vec<u8>,
 }
 
 struct App {
@@ -157,6 +174,7 @@ impl State {
             pad,
             origin_x: ox as f32,
             origin_y: oy as f32,
+            decoded: HashMap::new(),
         }
     }
 
@@ -218,11 +236,17 @@ impl State {
             self.palette.theme.bg,
         );
 
-        // Inline images: draw RGBA placements (Sixel / Kitty raw) over the cells.
+        // Inline images: draw RGBA placements over the cells. Raw Sixel / Kitty
+        // pixels are used directly; encoded PNGs (iTerm2, Kitty f=100) are decoded
+        // once and cached.
         let cw = self.atlas.cell_w as f32;
         let ch = self.atlas.cell_h as f32;
         let placements = self.term.image_placements(); // [id, row, col, w, h] * n
-        let mut rgbas: Vec<(u32, u32, u32, f32, f32, Vec<u8>)> = Vec::new();
+        let live: std::collections::HashSet<u32> =
+            placements.chunks(5).map(|p| p[0] as u32).collect();
+        self.decoded.retain(|id, _| live.contains(id));
+
+        let mut frames: Vec<ImgFrame> = Vec::new();
         for p in placements.chunks(5) {
             let (id, row, col, iw, ih) = (p[0] as u32, p[1], p[2], p[3] as u32, p[4] as u32);
             // Skip images fully above/below the viewport.
@@ -230,22 +254,56 @@ impl State {
             if y + ih as f32 <= 0.0 || y >= self.config.height as f32 {
                 continue;
             }
-            let rgba = self.term.image_rgba(id);
-            if rgba.is_empty() {
-                continue; // encoded image (no native decoder yet)
-            }
             let x = self.origin_x + col as f32 * cw;
-            rgbas.push((id, iw, ih, x, y, rgba));
+            let rgba = self.term.image_rgba(id);
+            if !rgba.is_empty() {
+                // Raw image: source size equals the (native) display box.
+                frames.push(ImgFrame {
+                    id,
+                    sw: iw,
+                    sh: ih,
+                    x,
+                    y,
+                    w: iw as f32,
+                    h: ih as f32,
+                    rgba,
+                });
+                continue;
+            }
+            // Encoded image: decode PNG (only format we handle natively yet).
+            if self.term.image_mime(id) != "image/png" {
+                continue;
+            }
+            if !self.decoded.contains_key(&id) {
+                let enc = self.term.image_encoded(id);
+                if let Some(dec) = decode_png(&enc) {
+                    self.decoded.insert(id, dec);
+                }
+            }
+            if let Some((dw, dh, drgba)) = self.decoded.get(&id) {
+                frames.push(ImgFrame {
+                    id,
+                    sw: *dw,
+                    sh: *dh,
+                    x,
+                    y,
+                    w: iw as f32, // scale the decoded PNG into the cell box
+                    h: ih as f32,
+                    rgba: drgba.clone(),
+                });
+            }
         }
-        let quads: Vec<ImageQuad> = rgbas
+        let quads: Vec<ImageQuad> = frames
             .iter()
-            .map(|(id, w, h, x, y, rgba)| ImageQuad {
-                id: *id,
-                w: *w,
-                h: *h,
-                x: *x,
-                y: *y,
-                rgba,
+            .map(|f| ImageQuad {
+                id: f.id,
+                src_w: f.sw,
+                src_h: f.sh,
+                x: f.x,
+                y: f.y,
+                w: f.w,
+                h: f.h,
+                rgba: &f.rgba,
             })
             .collect();
         self.images.render(&self.device, &self.queue, &view, &quads);
