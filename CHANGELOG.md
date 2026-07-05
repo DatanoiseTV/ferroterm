@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [native-0.8.0] - 2026-07-05
+
+### Added
+- **Selection and scrollback keyboard/mouse shortcuts** in the native app.
+  Shift-click extends the current selection from its far anchor to the clicked
+  cell (a subsequent drag keeps extending). Cmd+A (macOS) / Ctrl+Shift+A
+  (elsewhere) selects the whole visible viewport. Shift+PageUp / Shift+PageDown
+  page the scrollback viewport by nearly a full screen, staying clear of the
+  shell's own keys. Each builds on the already-tested selection and viewport
+  primitives (`Selection::new`, `scroll_up_view`/`scroll_down_view`).
+
 ## [native-0.7.0] - 2026-07-05
 
 ### Added

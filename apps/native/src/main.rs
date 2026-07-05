@@ -293,6 +293,13 @@ impl State {
         }
     }
 
+    /// Select the whole visible viewport (Cmd/Ctrl+A).
+    fn select_all(&mut self) {
+        let last = (self.cols.saturating_sub(1), self.rows.saturating_sub(1));
+        self.selection = Some(Selection::new((0, 0), last));
+        self.sel_anchor = None;
+    }
+
     /// Paste clipboard text into the PTY (bracketed if the app enabled it).
     fn paste_clipboard(&mut self) {
         if self.clipboard.is_none() {
@@ -570,6 +577,21 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         let (px, py) = state.cursor_px;
                         let cell = state.px_to_cell(px, py);
+                        // Shift-click extends the existing selection from its far
+                        // anchor to the clicked cell instead of starting a new one.
+                        if state.mods.shift_key() {
+                            let anchor = state
+                                .selection
+                                .map(|s| s.start)
+                                .or(state.sel_anchor)
+                                .unwrap_or(cell);
+                            let sel = Selection::new(anchor, cell);
+                            state.selection = (!sel.is_empty()).then_some(sel);
+                            state.sel_anchor = Some(anchor);
+                            state.last_click = None;
+                            state.window.request_redraw();
+                            return;
+                        }
                         // Count consecutive clicks on the same cell: 1=drag,
                         // 2=word, 3=line (then cycles).
                         let now = Instant::now();
@@ -615,6 +637,36 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         if s.eq_ignore_ascii_case("v") {
                             state.paste_clipboard();
+                            state.window.request_redraw();
+                            return;
+                        }
+                        if s.eq_ignore_ascii_case("a") {
+                            state.select_all();
+                            state.window.request_redraw();
+                            return;
+                        }
+                    }
+                }
+                // Shift+PageUp/PageDown pages the scrollback viewport (a nearly
+                // full screen at a time), staying out of the shell's own keys.
+                if state.mods.shift_key() {
+                    use winit::keyboard::{Key, NamedKey};
+                    if let Key::Named(named) = &event.logical_key {
+                        let page = state.rows.saturating_sub(1).max(1);
+                        let scrolled = match named {
+                            NamedKey::PageUp => {
+                                state.term.scroll_up_view(page);
+                                true
+                            }
+                            NamedKey::PageDown => {
+                                state.term.scroll_down_view(page);
+                                true
+                            }
+                            _ => false,
+                        };
+                        if scrolled {
+                            state.selection = None;
+                            state.sel_anchor = None;
                             state.window.request_redraw();
                             return;
                         }

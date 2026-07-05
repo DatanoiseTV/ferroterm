@@ -192,11 +192,13 @@ Working: shell I/O, keyboard, 256-color + truecolor, wide/CJK cells,
 shear/dilation otherwise), **underline/strikethrough**, **inline images** (Sixel
 and Kitty raw RGBA drawn directly; iTerm2 and Kitty encoded images —
 PNG/JPEG/GIF/BMP/WebP — decoded via the `image` crate), **mouse selection +
-clipboard** (click-drag, double-click word, triple-click line; Cmd/Ctrl+Shift+C/V
-to copy/paste), **blinking cursor**, **OSC 8 hyperlinks** (hover to underline, Cmd/Ctrl-click to
-open), mouse-wheel scrollback, resize, a rounded-corner-safe inset. Follow-ups
-toward full parity: selection across scrollback, color emoji (a richer text
-stack — swash/cosmic-text), and tabs/splits.
+clipboard** (click-drag, shift-click to extend, double-click word, triple-click
+line, Cmd+A / Ctrl+Shift+A to select all; Cmd/Ctrl+Shift+C/V to copy/paste),
+**blinking cursor**, **OSC 8 hyperlinks** (hover to underline, Cmd/Ctrl-click to
+open), mouse-wheel and Shift+PageUp/PageDown scrollback, resize, a
+rounded-corner-safe inset. Follow-ups toward full parity: selection across
+scrollback, color emoji (a richer text stack — swash/cosmic-text), and
+tabs/splits.
 
 ## Benchmarks
 
