@@ -159,6 +159,29 @@ Each tab/pane runs its own shell over `portable-pty`; only on-screen panes hold 
 renderer. Live title updates, battery percentage + time-remaining, FPS and
 throughput readouts, right-click menu, drag-resizable splits.
 
+## Native app (no webview)
+
+A native GPU terminal that runs the same core without a webview: **winit** owns
+the window and input, **wgpu** draws the grid (Metal on macOS, Vulkan/DX12 on
+Windows/Linux, GL fallback), and `portable-pty` runs the shell. The renderer
+mirrors the WebGL one (one instanced draw, per-cell background + glyph
+composited in a wgsl shader, glyphs rasterized into a cell atlas), and the
+parser, key encoding and colors are shared verbatim with the web component via
+`ferroterm-core` — so a shell looks identical native vs. in the browser.
+
+```bash
+cd apps/native
+cargo run --release          # opens a window running your $SHELL
+cargo run --release --example bench   # headless renderer benchmark (real GPU)
+cargo test                   # headless render test (offscreen, pixel-asserted)
+```
+
+Milestone 1 (working): shell I/O, keyboard, 256-color + truecolor, wide/CJK
+cells, mouse-wheel scrollback, resize, a rounded-corner-safe inset. Follow-ups
+toward full parity: bold/italic glyph shaping, color emoji (a richer text stack
+— swash/cosmic-text), selection + clipboard, inline images, hyperlinks, cursor
+blink, and tabs/splits.
+
 ## Benchmarks
 
 ```bash
@@ -175,6 +198,28 @@ On an Apple-silicon laptop (native release build):
 The parser has an ASCII fast-path that fills line spans in bulk; plain-text
 throughput is higher still. WASM runs a bit slower than native but in the same
 ballpark.
+
+### Native renderer (wgpu / Metal)
+
+`cargo run --release --example bench` in `apps/native/` renders full-screen
+frames of dense SGR content to an offscreen texture on the real GPU. On an
+**Apple M5 Pro (Metal)**, 10x18 px cells:
+
+| grid | cells | parse | CPU frame | (sustained) | GPU submit→idle |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 80×24 | 1,920 | 182 MB/s | 0.021 ms | ~48,000 fps | 1.97 ms |
+| 120×40 | 4,800 | 149 MB/s | 0.054 ms | ~18,400 fps | 2.12 ms |
+| 200×50 | 10,000 | 153 MB/s | 0.110 ms | ~9,000 fps | 2.31 ms |
+| 300×80 | 24,000 | 161 MB/s | 0.275 ms | ~3,600 fps | 2.40 ms |
+
+**CPU frame** is the render thread's real per-frame cost (snapshot decode +
+instance build), ~11 ns/cell — the renderer can produce frames orders of
+magnitude faster than any display refreshes, so interactive rendering is
+vsync-locked (120 Hz here), never renderer-bound. GPU rasterization of the
+instances is negligible; the flat ~2 ms *submit→idle* column is command-
+submission + full-sync latency measured off-vsync, which double-buffering hides
+in the live window. Parse throughput is lower than the ASCII numbers above
+because every cell here carries a fresh 256-color SGR pair (worst case).
 
 **Head-to-head vs. xterm.js** (same browser, identical payloads — see
 [COMPARISON.md](COMPARISON.md) for methodology): ferroterm parses **1.4×–4.4×
