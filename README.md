@@ -4,7 +4,10 @@ A fast, secure terminal emulator **core** written from scratch in Rust, compiled
 to WebAssembly, and wrapped in a small, dependency-free web component with both
 **Canvas2D** and **WebGL** renderers.
 
-<img width="796" height="566" alt="FerroTerm" src="https://github.com/user-attachments/assets/5d3593c0-1cab-405c-877a-bfbf2034dada" />
+<p align="center">
+  <img src="docs/screenshots/web-demo.png" width="880"
+       alt="ferroterm in the browser: 256-color palette, truecolor, bold/italic/underline/strike/inverse/dim, wide CJK, color emoji, box-drawing and OSC 8 links, rendered with WebGL" />
+</p>
 
 
 It is a clean-room reimplementation of the functionality of a browser terminal
@@ -168,6 +171,11 @@ mirrors the WebGL one (one instanced draw, per-cell background + glyph
 composited in a wgsl shader, glyphs rasterized into a cell atlas), and the
 parser, key encoding and colors are shared verbatim with the web component via
 `ferroterm-core` — so a shell looks identical native vs. in the browser.
+
+<p align="center">
+  <img src="docs/screenshots/native.png" width="720"
+       alt="the native wgpu terminal on Metal: colored prompt, ls, 256-color strip, truecolor gradient, box-drawing and a block cursor" />
+</p>
 
 ```bash
 cd apps/native
