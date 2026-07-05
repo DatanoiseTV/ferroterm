@@ -6,7 +6,7 @@
   <title>ferroterm — a Rust/WebAssembly terminal core</title>
   <meta name="description" content="A fast, memory-safe terminal emulator core: a from-scratch VT100/xterm engine in Rust compiled to WebAssembly, with Canvas2D and WebGL renderers, inline images, and grapheme-aware Unicode. 1.4-4.4x faster parsing than xterm.js." />
   <meta property="og:title" content="ferroterm" />
-  <meta property="og:description" content="A from-scratch VT100/xterm terminal core in Rust/WebAssembly with Canvas2D + WebGL renderers." />
+  <meta property="og:description" content="A from-scratch VT100/xterm terminal core in Rust/WebAssembly with Canvas2D + WebGL renderers — and a native wgpu desktop terminal on the same engine." />
   <meta property="og:type" content="website" />
   <style>
     :root {
@@ -189,6 +189,7 @@
         <span class="logo">ferro<span>term</span></span>
         <div class="links">
           <a href="#features" class="hide-sm">Features</a>
+          <a href="#native" class="hide-sm">Native</a>
           <a href="#measured" class="hide-sm">Benchmarks</a>
           <a href="#code" class="hide-sm">Usage</a>
           <a href="examples/">Live demo</a>
@@ -266,9 +267,9 @@
         </div>
         <div class="card">
           <div class="ic">Images</div>
-          <h3>Sixel + iTerm2</h3>
-          <p>Sixel graphics decoded in the core, and iTerm2 (OSC 1337) images decoded
-             natively by the browser — so no image codec bloats the WASM.</p>
+          <h3>Sixel · iTerm2 · Kitty</h3>
+          <p>Sixel decoded in the core; iTerm2 (OSC 1337) and Kitty graphics (APC)
+             images decoded natively by the browser — so no image codec bloats the WASM.</p>
         </div>
         <div class="card">
           <div class="ic">Links</div>
@@ -281,6 +282,40 @@
           <h3>Safe at the boundary</h3>
           <p>Every untrusted byte is parsed in memory-safe Rust with bounded buffers;
              the JS layer never interprets an escape sequence itself.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Native -->
+    <section id="native">
+      <div class="sec-head">
+        <div class="kicker">beyond the browser</div>
+        <h2>The same core, on the GPU</h2>
+        <p>The engine also drives a native desktop terminal — winit + wgpu
+           (Metal / Vulkan / DX12), no webview, running the identical Rust parser,
+           grid and key encoding as the web build.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="ic">Renderer</div>
+          <h3>Instanced wgpu</h3>
+          <p>A GPU cell renderer over a fontdue glyph atlas: 256-color and true color,
+             wide/CJK cells, bold/italic (real font faces or synthetic), underline and
+             strikethrough.</p>
+        </div>
+        <div class="card">
+          <div class="ic">Images</div>
+          <h3>Inline graphics</h3>
+          <p>Sixel and Kitty pixels drawn directly; iTerm2 and encoded Kitty images
+             (PNG/JPEG/GIF/BMP/WebP) decoded through the <code>image</code> crate and
+             composited over the cells.</p>
+        </div>
+        <div class="card">
+          <div class="ic">Input</div>
+          <h3>Selection &amp; scrollback</h3>
+          <p>Click-drag, shift-click, double-click word and triple-click line
+             selection that spans scrollback and auto-scrolls at the edges; select-all,
+             clipboard copy/paste, OSC 8 links, and a blinking cursor.</p>
         </div>
       </div>
     </section>
