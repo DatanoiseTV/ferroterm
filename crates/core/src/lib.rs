@@ -32,6 +32,7 @@ mod width;
 pub use cell::{attr, Cell, Color, Pen};
 pub use grid::{Buffer, Cursor};
 pub use keys::{encode_char, encode_key, Key, Mods};
+pub use palette::xterm256;
 pub use parser::{Params, Parser, Perform};
 pub use terminal::{Modes, Terminal, SNAPSHOT_CELL_WORDS, SNAPSHOT_MAGIC};
 pub use width::char_width;

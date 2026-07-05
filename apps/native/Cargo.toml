@@ -1,0 +1,27 @@
+[package]
+name = "ferroterm-native"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native GPU terminal built on ferroterm-core (winit + wgpu), no webview."
+repository = "https://github.com/DatanoiseTV/ferroterm"
+
+# Its own package (not part of the core workspace): it pulls in a heavy
+# native GPU/windowing stack that the library crates must stay free of.
+
+[[bin]]
+name = "ferroterm"
+path = "src/main.rs"
+
+[dependencies]
+ferroterm-core = { path = "../../crates/core" }
+winit = "0.30"
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+fontdue = "0.9"
+portable-pty = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
