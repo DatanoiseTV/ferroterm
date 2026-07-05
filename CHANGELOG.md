@@ -7,19 +7,6 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- **DOM renderer** for the web component (`renderer: 'dom'`), a third renderer
-  alongside WebGL and Canvas2D, in the spirit of xterm.js's DOM renderer: each
-  grid row is one `<div>` and adjacent same-style cells coalesce into a single
-  `<span>` (run-length), with the cursor as a separate absolutely-positioned
-  overlay. It renders through the browser's own text stack — crisp at any DPR
-  with no glyph atlas, color emoji for free, inspectable in devtools — at the
-  cost of being the slowest renderer (measured ~1.6× a full Canvas2D repaint,
-  the same reason xterm.js defaults away from it). Selection is blended to an
-  opaque cell background so text stays crisp; dim uses per-glyph alpha. Exposed
-  via the `renderer` option / attribute, `setRenderer('dom')`, the demo's
-  renderer dropdown, and the `DomRenderer` export. The headless render
-  regression test now covers all three renderers (computed span styles for the
-  DOM one), and `examples/benchmark.html` times it too.
 - **`apps/slint` rasterizer benchmark** (`cargo run --release --example bench`):
   parse throughput, snapshot-decode cost and full-frame raster time (warm and
   cold glyph cache) across grid sizes. The `Image`-renderer path is fill-bound

@@ -128,7 +128,7 @@
 
       const paint = await measureRenderers(term);
       const pipeline = {};
-      for (const kind of ['canvas', 'webgl', 'dom']) {
+      for (const kind of ['canvas', 'webgl']) {
         term.setRenderer(kind);
         await new Promise((r) => requestAnimationFrame(r));
         pipeline[kind] = measurePipeline(term);

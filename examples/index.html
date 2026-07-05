@@ -41,7 +41,6 @@
       <select id="renderer">
         <option value="webgl">WebGL</option>
         <option value="canvas">Canvas2D</option>
-        <option value="dom">DOM</option>
       </select>
       <span class="stat">fps <b id="fps">–</b></span>
     </div>
@@ -75,7 +74,7 @@
 
     // Renderer switch.
     const sel = document.getElementById('renderer');
-    sel.value = term.rendererName?.toLowerCase() || 'webgl';
+    sel.value = term.rendererName?.toLowerCase().includes('webgl') ? 'webgl' : 'canvas';
     sel.addEventListener('change', () => {
       term.setRenderer(sel.value);
       term.focus();

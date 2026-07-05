@@ -104,53 +104,6 @@
           t.detachView();
         }
 
-        // DOM renderer: no canvas to sample, so assert on the emitted <span>
-        // elements' computed styles instead (color / background / weight /
-        // decoration). Colours are exact here — no AA or atlas rounding.
-        function parseRgb(s) {
-          const m = /rgba?\(([^)]+)\)/.exec(s);
-          if (!m) return [0, 0, 0];
-          const p = m[1].split(',').map(Number);
-          return [p[0] | 0, p[1] | 0, p[2] | 0];
-        }
-        {
-          const t = makeTerm('dom');
-          const find = (pred) => {
-            for (const sp of t.renderer.element.querySelectorAll('.ft-dom-row span')) {
-              if (pred(sp.textContent)) return sp;
-            }
-            return null;
-          };
-          const cs = (sp) => (sp ? getComputedStyle(sp) : null);
-          const red = cs(find((x) => x.includes('RED')));
-          const bcell = cs(find((x) => x === 'B'));
-          const defc = cs(find((x) => x.includes('def')));
-          const inv = cs(find((x) => x === 'I'));
-          const wide = cs(find((x) => x.includes('世')));
-          const orange = cs(find((x) => x === 'O'));
-          const bold = cs(find((x) => x.includes('BOLD')));
-          const ul = cs(find((x) => x === 'U'));
-          const strike = cs(find((x) => x === 'S'));
-          results.dom = {
-            name: t.rendererName,
-            checks: {
-              redText: red ? parseRgb(red.color) : null,
-              blueBg: bcell ? parseRgb(bcell.backgroundColor) : null,
-              defaultBg: defc ? parseRgb(defc.backgroundColor) : null,
-              inverseBg: inv ? parseRgb(inv.backgroundColor) : null,
-              trueColor: orange ? parseRgb(orange.color) : null,
-              greenWide: wide ? parseRgb(wide.color) : null,
-            },
-            styles: {
-              bold: bold ? (parseInt(bold.fontWeight, 10) >= 600) : false,
-              underline: ul ? /underline/.test(ul.textDecorationLine || ul.textDecoration) : false,
-              strike: strike ? /line-through/.test(strike.textDecorationLine || strike.textDecoration) : false,
-            },
-            spanCount: t.renderer.element.querySelectorAll('.ft-dom-row span').length,
-          };
-          t.detachView();
-        }
-
         // Incremental parity: the WebGL renderer updates only changed rows
         // between frames. Drive a content change, a cursor move, and a
         // selection through the incremental path and assert each matches a

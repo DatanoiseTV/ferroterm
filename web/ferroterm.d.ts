@@ -17,7 +17,7 @@ export interface FerrotermOptions {
   fontFamily?: string;
   fontSize?: number;
   lineHeight?: number;
-  renderer?: 'webgl' | 'canvas' | 'dom';
+  renderer?: 'webgl' | 'canvas';
   theme?: Theme;
   cursorStyle?: 'block' | 'bar' | 'underline';
   cursorBlink?: boolean;
@@ -90,7 +90,7 @@ export class Ferroterm {
   detachView(): void;
   readonly attached: boolean;
 
-  setRenderer(kind: 'webgl' | 'canvas' | 'dom'): void;
+  setRenderer(kind: 'webgl' | 'canvas'): void;
   readonly rendererName: string | null;
   setTheme(theme: Theme): void;
   setFontSize(px: number): void;

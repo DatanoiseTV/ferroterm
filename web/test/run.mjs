@@ -164,29 +164,6 @@ async function main() {
       if (!detOk) failures++;
     }
 
-    // DOM renderer: semantic colours from the emitted spans' computed styles,
-    // plus bold/underline/strike attributes.
-    if (data.results.dom) {
-      const r = data.results.dom;
-      console.log(`\n  dom (${r.name})`);
-      for (const [key, exp] of Object.entries(expected)) {
-        const got = r.checks[key];
-        const ok = close(got, exp);
-        console.log(`    ${ok ? 'PASS' : 'FAIL'}  ${key.padEnd(11)} got [${got}] expected ~[${exp}]`);
-        if (!ok) failures++;
-      }
-      for (const [name, ok] of Object.entries(r.styles)) {
-        console.log(`    ${ok ? 'PASS' : 'FAIL'}  ${name}`);
-        if (!ok) failures++;
-      }
-      const spanOk = r.spanCount > 0;
-      console.log(`    ${spanOk ? 'PASS' : 'FAIL'}  emits spans (${r.spanCount})`);
-      if (!spanOk) failures++;
-    } else {
-      console.log('\n  dom\n    FAIL  fixture produced no dom result');
-      failures++;
-    }
-
     // Incremental (dirty-row) output must match a full re-render exactly.
     console.log('\n  webgl incremental parity (vs full re-render)');
     for (const [key, d] of Object.entries(data.incremental)) {
