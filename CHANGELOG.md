@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-07-05
+
+### Fixed
+- **Mouse-wheel scrolling was too sensitive.** The wheel handler scrolled a
+  fixed `sign(deltaY) * scrollSensitivity` (default 3) lines per event,
+  discarding the delta magnitude and unit — so a trackpad or high-resolution
+  wheel, which fires many small events per gesture, snapped a full three rows on
+  every one (a gentle nudge could jump ~24 rows). Wheel deltas are now
+  normalized to text rows by unit (`DOM_DELTA_LINE`/`PIXEL`/`PAGE`; pixel deltas
+  divided by the cell height) and the sub-row remainder is carried between
+  events, so scrolling is magnitude-proportional and pixel-accurate. The default
+  `scrollSensitivity` is now `1` (was `3`); set it higher for faster scrolling.
+
 ## [0.6.1] - 2026-07-05
 
 ### Performance

@@ -31,7 +31,7 @@ const DEFAULTS = {
   theme: DEFAULT_THEME,
   cursorStyle: 'block',
   cursorBlink: true,
-  scrollSensitivity: 3,
+  scrollSensitivity: 1,
   autoFit: true,
   copyOnSelect: false,
   rightClick: 'menu', // 'menu' | 'paste' | 'none'
@@ -954,10 +954,28 @@ export class Ferroterm {
       }
       return;
     }
-    const lines = Math.sign(e.deltaY) * this.opts.scrollSensitivity;
-    this.term.scrollLines(lines);
-    this._forceNext = true;
-    this._scheduleRender();
+    // Normalize the wheel delta to a fractional number of text rows, honoring
+    // the delta unit, then carry the sub-row remainder between events. This
+    // makes a physical mouse notch move a sensible, magnitude-proportional
+    // amount instead of a fixed jump, and stops a trackpad / high-resolution
+    // wheel — which fires many tiny events per gesture — from snapping a whole
+    // row on each one.
+    let rows;
+    if (e.deltaMode === 1) {
+      rows = e.deltaY; // DOM_DELTA_LINE: already in rows
+    } else if (e.deltaMode === 2) {
+      rows = e.deltaY * this.model.rows; // DOM_DELTA_PAGE
+    } else {
+      rows = e.deltaY / (this.metrics.cellH || 16); // DOM_DELTA_PIXEL
+    }
+    this._wheelAccum = (this._wheelAccum || 0) + rows * this.opts.scrollSensitivity;
+    const lines = Math.trunc(this._wheelAccum);
+    this._wheelAccum -= lines;
+    if (lines !== 0) {
+      this.term.scrollLines(lines);
+      this._forceNext = true;
+      this._scheduleRender();
+    }
     e.preventDefault();
   }
 

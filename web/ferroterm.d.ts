@@ -21,6 +21,12 @@ export interface FerrotermOptions {
   theme?: Theme;
   cursorStyle?: 'block' | 'bar' | 'underline';
   cursorBlink?: boolean;
+  /**
+   * Mouse-wheel scroll speed multiplier (default 1). Wheel deltas are
+   * normalized to text rows (pixel deltas are divided by the cell height and
+   * the sub-row remainder is carried between events), then scaled by this. Use
+   * >1 for faster scrolling, <1 for slower.
+   */
   scrollSensitivity?: number;
   /** Auto-fit to the container on resize (default true). */
   autoFit?: boolean;
