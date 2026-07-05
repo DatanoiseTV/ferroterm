@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ferroterm — a Rust/WebAssembly terminal core</title>
+  <meta name="description" content="A fast, memory-safe terminal emulator core: a from-scratch VT100/xterm engine in Rust compiled to WebAssembly, with Canvas2D and WebGL renderers, inline images, and grapheme-aware Unicode. 1.4-4.4x faster parsing than xterm.js." />
+  <meta property="og:title" content="ferroterm" />
+  <meta property="og:description" content="A from-scratch VT100/xterm terminal core in Rust/WebAssembly with Canvas2D + WebGL renderers." />
+  <meta property="og:type" content="website" />
+  <style>
+    :root {
+      --bg: #16161e;
+      --bg-2: #1a1b26;
+      --panel: #1f2335;
+      --panel-2: #24283b;
+      --line: #2f334d;
+      --fg: #c0caf5;
+      --muted: #9aa5ce;
+      --dim: #565f89;
+      --blue: #7aa2f7;
+      --cyan: #7dcfff;
+      --green: #9ece6a;
+      --magenta: #bb9af7;
+      --orange: #e0af68;
+      --red: #f7768e;
+      --radius: 12px;
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 15px/1.6 var(--sans);
+      -webkit-font-smoothing: antialiased;
+      background-image:
+        radial-gradient(60% 50% at 78% -8%, rgba(122,162,247,.16), transparent 60%),
+        radial-gradient(46% 40% at 4% 0%, rgba(187,154,247,.12), transparent 60%);
+      background-repeat: no-repeat;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+    /* Nav */
+    header {
+      position: sticky; top: 0; z-index: 10;
+      backdrop-filter: blur(10px);
+      background: color-mix(in srgb, var(--bg) 82%, transparent);
+      border-bottom: 1px solid var(--line);
+    }
+    nav { display: flex; align-items: center; gap: 22px; height: 58px; }
+    .logo { font-weight: 800; font-size: 17px; letter-spacing: .2px; color: var(--fg); }
+    .logo span { color: var(--blue); }
+    nav .links { margin-left: auto; display: flex; gap: 20px; align-items: center; }
+    nav .links a { color: var(--muted); font-size: 14px; }
+    nav .links a:hover { color: var(--fg); text-decoration: none; }
+    .ghbtn {
+      border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px;
+      color: var(--fg) !important; font-size: 13px; font-weight: 600;
+    }
+    .ghbtn:hover { background: var(--panel); text-decoration: none; }
+    @media (max-width: 720px) { nav .links a.hide-sm { display: none; } }
+
+    /* Hero */
+    .hero { display: grid; grid-template-columns: 1fr 1.05fr; gap: 40px; align-items: center; padding: 64px 0 40px; }
+    @media (max-width: 900px) { .hero { grid-template-columns: 1fr; padding: 40px 0 20px; } }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 12.5px; color: var(--cyan); font-family: var(--mono);
+      border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px;
+      background: var(--panel);
+    }
+    .badge b { color: var(--green); }
+    h1 { font-size: 52px; line-height: 1.05; margin: 18px 0 8px; letter-spacing: -1px; }
+    h1 .accent { background: linear-gradient(120deg, var(--blue), var(--magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .lede { font-size: 18px; color: var(--muted); margin: 0 0 26px; max-width: 34ch; }
+    @media (max-width: 900px) { h1 { font-size: 40px; } .lede { max-width: none; } }
+    .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 11px 18px; border-radius: 10px; font-weight: 600; font-size: 14.5px;
+      border: 1px solid transparent; cursor: pointer;
+    }
+    .btn-primary { background: var(--blue); color: #0b1020; }
+    .btn-primary:hover { background: #90b3ff; text-decoration: none; }
+    .btn-ghost { background: var(--panel); color: var(--fg); border-color: var(--line); }
+    .btn-ghost:hover { background: var(--panel-2); text-decoration: none; }
+    .quickstats { display: flex; gap: 26px; margin-top: 30px; flex-wrap: wrap; }
+    .quickstats .qs b { display: block; font-size: 22px; color: var(--fg); font-family: var(--mono); }
+    .quickstats .qs span { font-size: 12.5px; color: var(--dim); }
+
+    /* Terminal card */
+    .term-card {
+      border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+      background: var(--bg-2); box-shadow: 0 24px 60px -24px rgba(0,0,0,.7);
+    }
+    .term-bar {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      background: var(--panel); border-bottom: 1px solid var(--line);
+    }
+    .term-bar .dot { width: 11px; height: 11px; border-radius: 50%; }
+    .term-bar .dot.r { background: #ff5f57; } .term-bar .dot.y { background: #febc2e; } .term-bar .dot.g { background: #28c840; }
+    .term-bar .title { margin-left: 8px; font-size: 12px; color: var(--dim); font-family: var(--mono); }
+    .term-bar .rswitch { margin-left: auto; display: flex; gap: 4px; }
+    .term-bar .rswitch button {
+      font: 11px var(--mono); color: var(--muted); background: transparent;
+      border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; cursor: pointer;
+    }
+    .term-bar .rswitch button.on { color: #0b1020; background: var(--blue); border-color: var(--blue); }
+    #term { height: 340px; padding: 8px 10px; }
+    #term-fallback { display: none; padding: 22px; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+    #term-fallback b { color: var(--orange); }
+
+    /* Sections */
+    section { padding: 44px 0; }
+    .sec-head { text-align: center; max-width: 620px; margin: 0 auto 34px; }
+    .sec-head h2 { font-size: 30px; margin: 0 0 8px; letter-spacing: -.5px; }
+    .sec-head p { color: var(--muted); margin: 0; }
+    .kicker { font-family: var(--mono); font-size: 12.5px; color: var(--blue); text-transform: uppercase; letter-spacing: 2px; }
+
+    /* Feature grid */
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      border: 1px solid var(--line); border-radius: var(--radius); padding: 20px;
+      background: linear-gradient(180deg, var(--panel), var(--bg-2));
+    }
+    .card .ic { font-family: var(--mono); font-size: 13px; color: var(--blue); font-weight: 700; margin-bottom: 10px; }
+    .card h3 { margin: 0 0 6px; font-size: 16px; }
+    .card p { margin: 0; color: var(--muted); font-size: 13.5px; }
+
+    /* Measured */
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    @media (max-width: 720px) { .stats { grid-template-columns: 1fr; } }
+    .stat {
+      border: 1px solid var(--line); border-radius: var(--radius); padding: 22px;
+      background: var(--bg-2); text-align: center;
+    }
+    .stat .big { font-family: var(--mono); font-size: 34px; font-weight: 700; letter-spacing: -1px; }
+    .stat .big.blue { color: var(--blue); } .stat .big.green { color: var(--green); } .stat .big.magenta { color: var(--magenta); }
+    .stat .lbl { color: var(--fg); font-weight: 600; margin-top: 6px; }
+    .stat .sub { color: var(--dim); font-size: 12.5px; margin-top: 4px; }
+    .measured-note { text-align: center; color: var(--dim); font-size: 13px; margin-top: 20px; }
+
+    /* Code */
+    .code-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    @media (max-width: 820px) { .code-grid { grid-template-columns: 1fr; } }
+    .code {
+      position: relative; border: 1px solid var(--line); border-radius: var(--radius);
+      background: #0e0f17; overflow: hidden;
+    }
+    .code .chead {
+      display: flex; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line);
+      font-family: var(--mono); font-size: 12px; color: var(--dim); background: var(--panel);
+    }
+    .code .copy {
+      margin-left: auto; cursor: pointer; border: 1px solid var(--line); border-radius: 6px;
+      background: transparent; color: var(--muted); font: 11px var(--mono); padding: 3px 9px;
+    }
+    .code .copy:hover { color: var(--fg); background: var(--panel-2); }
+    pre { margin: 0; padding: 16px; overflow-x: auto; font: 13px/1.65 var(--mono); color: #a9b1d6; }
+    .t-kw { color: var(--magenta); } .t-fn { color: var(--blue); } .t-str { color: var(--green); }
+    .t-cm { color: var(--dim); } .t-num { color: var(--orange); } .t-pn { color: var(--cyan); }
+
+    /* Demo links */
+    .demos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    @media (max-width: 780px) { .demos { grid-template-columns: 1fr; } }
+    .demo {
+      display: block; border: 1px solid var(--line); border-radius: var(--radius); padding: 22px;
+      background: var(--bg-2); color: var(--fg);
+    }
+    .demo:hover { border-color: var(--blue); text-decoration: none; transform: translateY(-2px); transition: .15s; }
+    .demo h3 { margin: 0 0 6px; font-size: 16px; }
+    .demo h3 span { color: var(--blue); }
+    .demo p { margin: 0; color: var(--muted); font-size: 13.5px; }
+
+    footer { border-top: 1px solid var(--line); padding: 34px 0; color: var(--dim); font-size: 13.5px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; }
+    footer a { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <nav>
+        <span class="logo">ferro<span>term</span></span>
+        <div class="links">
+          <a href="#features" class="hide-sm">Features</a>
+          <a href="#measured" class="hide-sm">Benchmarks</a>
+          <a href="#code" class="hide-sm">Usage</a>
+          <a href="examples/">Live demo</a>
+          <a class="ghbtn" href="https://github.com/DatanoiseTV/ferroterm">GitHub</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Hero -->
+    <div class="hero">
+      <div>
+        <span class="badge">memory-safe core · <b>Rust → WASM</b></span>
+        <h1>The terminal core,<br /><span class="accent">rewritten in Rust.</span></h1>
+        <p class="lede">
+          A from-scratch VT100/xterm engine compiled to WebAssembly, with Canvas2D
+          and WebGL renderers built in. Faster parsing, a smaller bundle, and an
+          untrusted-byte parser that is memory-safe by construction.
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" href="examples/">Open the live demo →</a>
+          <a class="btn btn-ghost" href="examples/benchmark.html">Run the benchmark</a>
+        </div>
+        <div class="quickstats">
+          <div class="qs"><b>1.4–4.4×</b><span>faster parse vs xterm.js</span></div>
+          <div class="qs"><b>73 KB</b><span>gzip, both renderers + all features</span></div>
+          <div class="qs"><b>0 deps</b><span>no runtime dependencies</span></div>
+        </div>
+      </div>
+
+      <div class="term-card">
+        <div class="term-bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="title" id="term-title">ferroterm — live</span>
+          <span class="rswitch" id="rswitch">
+            <button data-r="webgl" class="on">WebGL</button>
+            <button data-r="canvas">Canvas2D</button>
+          </span>
+        </div>
+        <div id="term"></div>
+        <div id="term-fallback">
+          <b>WebAssembly demo unavailable here.</b><br />
+          Build the module with <code>./build.sh</code> and serve over HTTP, or
+          open the hosted <a href="examples/">live demo</a>.
+        </div>
+      </div>
+    </div>
+
+    <!-- Features -->
+    <section id="features">
+      <div class="sec-head">
+        <div class="kicker">what's inside</div>
+        <h2>A real terminal, not a textarea</h2>
+        <p>Everything a browser terminal needs, built in — no addon zoo to assemble.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="ic">VT / ANSI</div>
+          <h3>From-scratch parser</h3>
+          <p>DEC (Williams) state machine: CSI/OSC/DCS, SGR with 256-color and 24-bit
+             true color, scroll regions, alternate screen, DECSET modes, host replies.</p>
+        </div>
+        <div class="card">
+          <div class="ic">Unicode</div>
+          <h3>Grapheme-aware</h3>
+          <p>Astral emoji, wide CJK cells, and cluster merging — combining accents,
+             ZWJ sequences, variation selectors and flags collapse into one cell.</p>
+        </div>
+        <div class="card">
+          <div class="ic">GPU</div>
+          <h3>Two renderers</h3>
+          <p>Canvas2D and an instanced WebGL renderer that re-uploads only changed
+             rows. A one-row edit repaints a fraction of a full frame.</p>
+        </div>
+        <div class="card">
+          <div class="ic">Images</div>
+          <h3>Sixel + iTerm2</h3>
+          <p>Sixel graphics decoded in the core, and iTerm2 (OSC 1337) images decoded
+             natively by the browser — so no image codec bloats the WASM.</p>
+        </div>
+        <div class="card">
+          <div class="ic">Links</div>
+          <h3>Hyperlinks & palette</h3>
+          <p>OSC 8 links plus automatic URL detection, and a live dynamic palette
+             (OSC 4/10/11/12) with color-query replies.</p>
+        </div>
+        <div class="card">
+          <div class="ic">Safety</div>
+          <h3>Safe at the boundary</h3>
+          <p>Every untrusted byte is parsed in memory-safe Rust with bounded buffers;
+             the JS layer never interprets an escape sequence itself.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Measured -->
+    <section id="measured">
+      <div class="sec-head">
+        <div class="kicker">measured, not asserted</div>
+        <h2>The numbers</h2>
+        <p>Reproducible head-to-head against xterm.js in the same browser on identical payloads.</p>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="big green">446 MB/s</div>
+          <div class="lbl">plain-text parse</div>
+          <div class="sub">4.4× xterm.js · 179–488 MB/s across workloads</div>
+        </div>
+        <div class="stat">
+          <div class="big blue">73 KB</div>
+          <div class="lbl">gzip bundle</div>
+          <div class="sub">both renderers + Sixel, images, reflow, search, links</div>
+        </div>
+        <div class="stat">
+          <div class="big magenta">~4200 fps</div>
+          <div class="lbl">WebGL full frame</div>
+          <div class="sub">200×50, compute-bound; far past display refresh</div>
+        </div>
+      </div>
+      <p class="measured-note">
+        Full methodology and the xterm.js comparison table in
+        <a href="https://github.com/DatanoiseTV/ferroterm/blob/master/COMPARISON.md">COMPARISON.md</a>.
+        FPS is software-GL (SwiftShader) here — a lower bound; real GPUs are faster.
+      </p>
+    </section>
+
+    <!-- Code -->
+    <section id="code">
+      <div class="sec-head">
+        <div class="kicker">drop it in</div>
+        <h2>Wire a PTY in a few lines</h2>
+        <p>An ES module with TypeScript types. Point it at any byte stream.</p>
+      </div>
+      <div class="code-grid">
+        <div class="code">
+          <div class="chead">install<button class="copy" data-copy="install">copy</button></div>
+<pre id="install"><span class="t-cm"># npm — ships wasm + JS, both renderers</span>
+npm install ferroterm
+
+<span class="t-cm"># or build from source</span>
+git clone https://github.com/DatanoiseTV/ferroterm
+<span class="t-fn">cd</span> ferroterm && ./build.sh</pre>
+        </div>
+        <div class="code">
+          <div class="chead">app.js<button class="copy" data-copy="usage">copy</button></div>
+<pre id="usage"><span class="t-kw">import</span> { Ferroterm } <span class="t-kw">from</span> <span class="t-str">'ferroterm'</span>;
+
+<span class="t-kw">const</span> term = <span class="t-kw">await</span> Ferroterm.<span class="t-fn">create</span>(el, {
+  cols: <span class="t-num">80</span>, rows: <span class="t-num">24</span>, renderer: <span class="t-str">'webgl'</span>,
+});
+
+<span class="t-cm">// keystrokes → PTY, PTY bytes → screen</span>
+<span class="t-kw">const</span> ws = <span class="t-kw">new</span> <span class="t-fn">WebSocket</span>(<span class="t-str">'wss://host/pty'</span>);
+ws.binaryType = <span class="t-str">'arraybuffer'</span>;
+term.<span class="t-fn">onData</span>(b => ws.<span class="t-fn">send</span>(b));
+ws.onmessage = e => term.<span class="t-fn">write</span>(<span class="t-kw">new</span> <span class="t-pn">Uint8Array</span>(e.data));</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Demos -->
+    <section id="demos">
+      <div class="sec-head">
+        <div class="kicker">try it</div>
+        <h2>Demos & examples</h2>
+        <p>Everything runs client-side — no backend.</p>
+      </div>
+      <div class="demos">
+        <a class="demo" href="examples/">
+          <h3>Interactive <span>shell →</span></h3>
+          <p>A local demo shell with <code>loadtest</code>, <code>colors</code>,
+             <code>chars</code>, links and a live benchmark command.</p>
+        </a>
+        <a class="demo" href="examples/benchmark.html">
+          <h3>Renderer <span>benchmark →</span></h3>
+          <p>Detects your GPU, then times render, per-frame pipeline and incremental
+             repaints. Tables plus copyable JSON.</p>
+        </a>
+        <a class="demo" href="examples/webserial.html">
+          <h3>Web <span>Serial →</span></h3>
+          <p>Talk to a real serial device (microcontroller, modem) straight from the
+             browser through ferroterm.</p>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>ferroterm — from-scratch VT100/xterm core in Rust → WebAssembly. MIT licensed.</span>
+      <span>
+        <a href="https://github.com/DatanoiseTV/ferroterm">GitHub</a> ·
+        <a href="https://github.com/DatanoiseTV/ferroterm/blob/master/CHANGELOG.md">Changelog</a> ·
+        <a href="https://github.com/DatanoiseTV/ferroterm/blob/master/COMPARISON.md">vs xterm.js</a>
+      </span>
+    </div>
+  </footer>
+
+  <script type="module">
+    // Copy buttons.
+    for (const b of document.querySelectorAll('.copy')) {
+      b.addEventListener('click', async () => {
+        const el = document.getElementById(b.dataset.copy);
+        try { await navigator.clipboard.writeText(el.innerText); b.textContent = 'copied'; setTimeout(() => (b.textContent = 'copy'), 1200); }
+        catch { b.textContent = 'select+copy'; }
+      });
+    }
+
+    // Live hero terminal with an auto-playing scripted session.
+    const mount = document.getElementById('term');
+    let term;
+    try {
+      const { Ferroterm } = await import('./web/src/index.js');
+      term = await Ferroterm.create(mount, {
+        renderer: 'webgl', fontSize: 13, cols: 82, rows: 22, cursorBlink: true,
+      });
+      term.fit();
+      window.__ferro = term;
+
+      // Renderer switch.
+      const sw = document.getElementById('rswitch');
+      sw.addEventListener('click', (e) => {
+        const btn = e.target.closest('button'); if (!btn) return;
+        term.setRenderer(btn.dataset.r);
+        for (const x of sw.children) x.classList.toggle('on', x === btn);
+      });
+
+      runDemo(term);
+    } catch (e) {
+      mount.style.display = 'none';
+      document.getElementById('term-fallback').style.display = 'block';
+      document.getElementById('rswitch').style.display = 'none';
+      console.warn('ferroterm demo unavailable:', e);
+    }
+
+    function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+    async function runDemo(t) {
+      const w = t.write.bind(t);
+      const cols = t.cols;
+      const prompt = () => w('\x1b[38;5;114mferro\x1b[38;5;111mterm\x1b[0m:\x1b[38;5;111m~\x1b[0m$ ');
+      const type = async (s, cps = 34) => { for (const ch of s) { w(ch); await sleep(1000 / cps + Math.random() * 12); } };
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        w('\x1b[2J\x1b[H');
+        w('\x1b[38;5;111m╭─ ferroterm \x1b[38;5;245m· a Rust/WASM terminal core\x1b[0m\r\n');
+        w('\x1b[38;5;111m╰─\x1b[0m parsing untrusted bytes, safely and fast\r\n\r\n');
+        await sleep(500);
+
+        prompt(); await type('ls --color'); w('\r\n');
+        await sleep(180);
+        w('\x1b[38;5;111msrc/\x1b[0m  \x1b[38;5;111mpkg/\x1b[0m  \x1b[38;5;150mREADME.md\x1b[0m  ');
+        w('\x1b[38;5;150mCargo.toml\x1b[0m  \x1b[38;5;114mbuild.sh\x1b[0m  \x1b[38;5;180mLICENSE\x1b[0m\r\n\r\n');
+        await sleep(650);
+
+        prompt(); await type('ferroterm --palette'); w('\r\n');
+        await sleep(150);
+        // 256-color strip.
+        for (let i = 16; i < 16 + Math.min(cols - 2, 216); i++) w(`\x1b[48;5;${i}m \x1b[0m`);
+        w('\r\n');
+        // Truecolor gradient.
+        const n = cols - 2;
+        for (let x = 0; x < n; x++) {
+          const h = x / n;
+          const r = Math.round(128 + 127 * Math.sin(6.283 * h));
+          const g = Math.round(128 + 127 * Math.sin(6.283 * (h + 0.33)));
+          const b = Math.round(128 + 127 * Math.sin(6.283 * (h + 0.66)));
+          w(`\x1b[48;2;${r};${g};${b}m \x1b[0m`);
+        }
+        w('\r\n\r\n');
+        await sleep(700);
+
+        prompt(); await type('echo "unicode: 世界 café 🦀 👨‍👩‍👧 🇩🇪 → ✓"'); w('\r\n');
+        await sleep(160);
+        w('unicode: \x1b[38;5;180m世界\x1b[0m café \x1b[38;5;209m🦀\x1b[0m 👨‍👩‍👧 🇩🇪 \x1b[38;5;111m→\x1b[0m \x1b[38;5;114m✓\x1b[0m\r\n\r\n');
+        await sleep(650);
+
+        prompt(); await type('cat docs.url'); w('\r\n');
+        await sleep(140);
+        w('see \x1b]8;;https://github.com/DatanoiseTV/ferroterm\x1b\\\x1b[4;38;5;111mgithub.com/DatanoiseTV/ferroterm\x1b[0m\x1b]8;;\x1b\\ for docs\r\n\r\n');
+        await sleep(650);
+
+        prompt(); await type('ferroterm --bench'); w('\r\n');
+        await sleep(150);
+        w('\x1b[38;5;245m  workload        throughput\x1b[0m\r\n');
+        const rows = [['plain text', '446 MB/s', 16], ['256-color', '202 MB/s', 7], ['true color', '179 MB/s', 6], ['scroll', '488 MB/s', 16]];
+        for (const [name, rate, bars] of rows) {
+          w(`  \x1b[38;5;150m${name.padEnd(14)}\x1b[0m \x1b[38;5;114m${rate.padStart(9)}\x1b[0m  `);
+          w('\x1b[38;5;114m' + '█'.repeat(bars) + '\x1b[38;5;238m' + '░'.repeat(16 - bars) + '\x1b[0m\r\n');
+          await sleep(120);
+        }
+        w('\r\n');
+        prompt();
+        await sleep(4200);
+      }
+    }
+  </script>
+</body>
+</html>
