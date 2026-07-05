@@ -1,0 +1,46 @@
+// The whole terminal is drawn on the Rust side into an RGBA buffer and handed
+// over as `frame`; this file only displays that buffer and forwards keystrokes.
+//
+// A `FocusScope` captures every key press and passes the raw `event.text` plus
+// the four modifier flags to Rust, which maps them onto ferroterm-core's key
+// encoder. Named keys (arrows, F-keys, Home/End, ...) arrive in `event.text` as
+// the private-use / control codepoints Slint documents, and Rust decodes those.
+
+export component MainWindow inherits Window {
+    in property <image> frame;
+    callback key(string, bool, bool, bool, bool);
+
+    title: "ferroterm — Slint";
+    background: #1a1b26;
+    preferred-width: 720px;
+    preferred-height: 432px;
+    min-width: 240px;
+    min-height: 120px;
+    forward-focus: fs;
+
+    fs := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        key-pressed(event) => {
+            root.key(
+                event.text,
+                event.modifiers.shift,
+                event.modifiers.control,
+                event.modifiers.alt,
+                event.modifiers.meta,
+            );
+            accept
+        }
+
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.frame;
+            image-fit: fill;
+            // The buffer is rasterized at the window's exact physical pixel
+            // size, so a 1:1 nearest-neighbour blit keeps glyph edges crisp.
+            image-rendering: pixelated;
+        }
+    }
+}
