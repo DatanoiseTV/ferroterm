@@ -4,19 +4,57 @@
 //!
 //!   cargo run --release --example shot -- out.png
 //!
-//! The scene is limited to what the native renderer draws today (colors, plain
-//! text, box-drawing, underline/strikethrough); it avoids CJK/emoji, which the
-//! bundled monospace lacks.
+//! The scene shows what the native renderer draws today (colors, plain text,
+//! box-drawing, bold/italic, underline/strikethrough and an inline image); it
+//! avoids CJK/emoji, which the bundled monospace lacks.
 
 use std::io::BufWriter;
 
 use ferroterm_core::Terminal;
 use ferroterm_native::atlas::Atlas;
+use ferroterm_native::images::{ImageLayer, ImageQuad};
 use ferroterm_native::palette::{Palette, Theme};
 use ferroterm_native::renderer::Renderer;
 use ferroterm_native::snapshot::Grid;
 
 const FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Standard base64 (Kitty's wire encoding).
+fn b64(data: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if c.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// A Kitty transmit-and-display escape for a `w`x`h` RGBA gradient image.
+fn kitty_gradient(w: u32, h: u32) -> String {
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let r = (255 * x / w.max(1)) as u8;
+            let g = (255 * y / h.max(1)) as u8;
+            px.extend_from_slice(&[r, g, 200, 255]);
+        }
+    }
+    format!("\x1b_Ga=T,f=32,s={w},v={h};{}\x1b\\", b64(&px))
+}
 
 fn scene(cols: usize) -> String {
     let mut s = String::from("\x1b[H");
@@ -49,6 +87,15 @@ fn scene(cols: usize) -> String {
     s.push_str(
         "\r\n  \x1b[38;5;111m\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}\x1b[0m\r\n\r\n",
     );
+    // Text styles the native renderer now supports.
+    s.push_str(
+        "  \x1b[1mbold\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[1;3mbold-italic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m\r\n\r\n",
+    );
+    // An inline image (Kitty RGBA), which the image layer composites over cells.
+    s.push_str(&format!(
+        "{p}:\x1b[38;5;111m~\x1b[0m$ icat gradient.png\r\n"
+    ));
+    s.push_str(&kitty_gradient(120, 48));
     s.push_str(&format!("{p}:\x1b[38;5;111m~\x1b[0m$ "));
     s
 }
@@ -79,9 +126,11 @@ fn main() {
 
     let mut atlas = Atlas::new(28.0); // large for a crisp screenshot
     let pal = Palette::new(Theme::default());
-    let (cols, rows) = (66usize, 13usize);
+    let (cols, rows) = (66usize, 16usize);
 
     let mut term = Terminal::new(cols, rows, 100);
+    // Tell the core the cell size so the inline image lays out in whole cells.
+    term.set_cell_pixels(atlas.cell_w as usize, atlas.cell_h as usize);
     term.feed(scene(cols).as_bytes());
     let mut grid = Grid::default();
     let mut snap = Vec::new();
@@ -120,6 +169,38 @@ fn main() {
         true,
         pal.theme.bg,
     );
+
+    // Inline images: draw the scene's RGBA placements over the cells.
+    let mut images = ImageLayer::new(&device, FMT);
+    images.set_screen(w as f32, h as f32, margin as f32, margin as f32);
+    let cw = atlas.cell_w as f32;
+    let ch = atlas.cell_h as f32;
+    let placements = term.image_placements();
+    let mut owned: Vec<(u32, u32, u32, f32, f32, Vec<u8>)> = Vec::new();
+    for p in placements.chunks(5) {
+        let (id, row, col, iw, ih) = (p[0] as u32, p[1], p[2], p[3] as u32, p[4] as u32);
+        let rgba = term.image_rgba(id);
+        if rgba.is_empty() {
+            continue;
+        }
+        let x = margin as f32 + col as f32 * cw;
+        let y = margin as f32 + row as f32 * ch;
+        owned.push((id, iw, ih, x, y, rgba));
+    }
+    let quads: Vec<ImageQuad> = owned
+        .iter()
+        .map(|(id, iw, ih, x, y, rgba)| ImageQuad {
+            id: *id,
+            src_w: *iw,
+            src_h: *ih,
+            x: *x,
+            y: *y,
+            w: *iw as f32,
+            h: *ih as f32,
+            rgba,
+        })
+        .collect();
+    images.render(&device, &queue, &view, &quads);
 
     // Read back and repack to tight RGBA rows.
     let padded = (w * 4).div_ceil(256) * 256;
