@@ -9,7 +9,9 @@
 //! Features: a full DEC/Williams escape-sequence [`parser`], UTF-8 decoding
 //! with astral-plane and wide-character support, SGR incl. 256-color and true
 //! color, scroll regions, alternate screen, scrollback, DECSET/DECRST modes,
-//! OSC 0/2 titles and OSC 8 hyperlinks, and host replies (DSR/DA).
+//! OSC 0/2 titles and OSC 8 hyperlinks, OSC 133 shell-integration command
+//! marks ([`Terminal::blocks`]) and OSC 7 working-directory reports
+//! ([`Terminal::cwd`]), and host replies (DSR/DA).
 //!
 //! ```
 //! use ferroterm_core::Terminal;
@@ -35,7 +37,7 @@ pub use grid::{Buffer, Cursor};
 pub use keys::{encode_char, encode_key, Key, Mods};
 pub use palette::xterm256;
 pub use parser::{Params, Parser, Perform};
-pub use terminal::{Modes, Terminal, SNAPSHOT_CELL_WORDS, SNAPSHOT_MAGIC};
+pub use terminal::{Block, Modes, Terminal, SNAPSHOT_CELL_WORDS, SNAPSHOT_MAGIC};
 pub use width::char_width;
 
 impl Terminal {

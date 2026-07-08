@@ -64,6 +64,29 @@ impl Default for Modes {
     }
 }
 
+/// One shell command tracked via OSC 133 marks. All line fields are
+/// absolute line indices (scrollback + screen, 0 = oldest retained line).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Block {
+    /// Line of the OSC 133;A mark (prompt start).
+    pub prompt_line: usize,
+    /// Line of OSC 133;B (prompt end / input start); `== prompt_line` if B was
+    /// never seen.
+    pub cmd_line: usize,
+    /// Line of OSC 133;C (command executed); `== cmd_line` until C is seen.
+    pub output_line: usize,
+    /// Line of OSC 133;D, or the current cursor line while still running.
+    pub end_line: usize,
+    /// Exit code from `OSC 133;D;<code>`; `None` while running or when D
+    /// carried no code.
+    pub exit: Option<i32>,
+    /// D received.
+    pub done: bool,
+}
+
+/// Hard cap on tracked OSC 133 blocks; the oldest is dropped past this.
+const MAX_BLOCKS: usize = 2048;
+
 /// A full terminal emulator instance.
 pub struct Terminal {
     parser: Parser,
@@ -142,6 +165,15 @@ pub struct Terminal {
     kitty_pending: Option<(crate::kitty::Cmd, Vec<u8>)>,
     /// Kitty images transmitted but not displayed, awaiting a later `a=p`.
     kitty_store: Vec<KittyImage>,
+
+    /// Shell command blocks tracked via OSC 133 marks (oldest first).
+    blocks: Vec<Block>,
+    /// The open (last, not-done) block has received its C mark, so a late B
+    /// must not clobber `output_line`.
+    block_seen_c: bool,
+    /// Working directory reported via OSC 7 (percent-decoded path, host part
+    /// ignored); empty if never reported.
+    cwd: String,
 }
 
 /// A placed inline image (Sixel, or an iTerm2 OSC 1337 `File=` image).
@@ -234,6 +266,9 @@ impl Terminal {
             cell_px_h: 16,
             kitty_pending: None,
             kitty_store: Vec::new(),
+            blocks: Vec::new(),
+            block_seen_c: false,
+            cwd: String::new(),
         }
     }
 
@@ -263,6 +298,33 @@ impl Terminal {
     #[inline]
     pub fn display_offset(&self) -> usize {
         self.display_offset
+    }
+
+    /// Shell command blocks tracked via OSC 133 marks, oldest to newest.
+    ///
+    /// Line fields are absolute line indices into the retained history
+    /// (scrollback + screen, 0 = oldest retained line), taken as
+    /// `scrollback_len() + cursor row` at the moment each mark arrived. When
+    /// scrollback overflow drops lines off the top, block lines shift down
+    /// with them; a block whose last line scrolls out of retained history is
+    /// evicted, and at most 2048 blocks are kept (oldest dropped first).
+    ///
+    /// A resize that changes the column count rewraps the whole scrollback
+    /// and renumbers every line; blocks are discarded then, because there is
+    /// no faithful mapping from old to new line indices. Row-only resizes
+    /// keep blocks (shifted if the rewrap drops lines past the scrollback
+    /// cap). OSC 133 marks received on the alternate screen are ignored.
+    #[inline]
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
+    /// Working directory reported via OSC 7 (`file://host/path`): the
+    /// percent-decoded path only, host ignored. Empty if never reported.
+    /// An empty OSC 7 payload clears it; non-`file://` URLs are ignored.
+    #[inline]
+    pub fn cwd(&self) -> &str {
+        &self.cwd
     }
 
     /// The active buffer's line `y` (visible grid, ignores scrollback offset).
@@ -377,6 +439,18 @@ impl Terminal {
         let mut parser = std::mem::take(&mut self.parser);
         parser.advance(self, bytes);
         self.parser = parser;
+
+        // Keep the open command block's end_line tracking the cursor while the
+        // command is still running (frozen while the alt screen is active,
+        // since the primary buffer doesn't move then).
+        if !self.alt_active {
+            let abs = self.scrollback.len() + self.primary.cursor.y;
+            if let Some(b) = self.blocks.last_mut() {
+                if !b.done {
+                    b.end_line = abs.max(b.output_line);
+                }
+            }
+        }
     }
 
     /// Drain queued replies destined for the host (send these to the PTY).
@@ -479,11 +553,43 @@ impl Terminal {
         for l in sb_rows {
             self.scrollback.push_back(l);
         }
+        let mut dropped = 0usize;
         while self.scrollback.len() > self.max_scrollback {
             self.scrollback.pop_front();
+            dropped += 1;
         }
+        let old_cols = self.primary.cols;
         self.primary
             .set_grid(new_cols, new_rows, grid_rows, r.cursor_col, cy);
+
+        // Command-block line accounting across the rewrap: a column change
+        // renumbers every physical line, so tracked blocks are discarded (see
+        // [`Terminal::blocks`]). A row-only change keeps the physical stream
+        // intact — just shift for lines dropped past the scrollback cap and
+        // drop blocks pointing past the retained content.
+        if new_cols != old_cols {
+            self.blocks.clear();
+        } else {
+            self.shift_blocks(dropped);
+            let total = self.total_lines();
+            self.blocks.retain(|b| b.end_line < total);
+        }
+    }
+
+    /// Renumber command blocks after `dropped` lines fell off the top of
+    /// retained history: evict blocks that scrolled out entirely (their last
+    /// line gone), shift the rest down.
+    fn shift_blocks(&mut self, dropped: usize) {
+        if dropped == 0 || self.blocks.is_empty() {
+            return;
+        }
+        self.blocks.retain(|b| b.end_line >= dropped);
+        for b in &mut self.blocks {
+            b.prompt_line = b.prompt_line.saturating_sub(dropped);
+            b.cmd_line = b.cmd_line.saturating_sub(dropped);
+            b.output_line = b.output_line.saturating_sub(dropped);
+            b.end_line -= dropped;
+        }
     }
 
     // --- internal buffer access --------------------------------------------
@@ -752,12 +858,17 @@ impl Terminal {
             let mut evicted: Vec<Line> = Vec::new();
             self.primary.scroll_up(n, pen, Some(&mut evicted));
             let count = evicted.len();
+            let mut dropped = 0usize;
             for line in evicted {
                 self.scrollback.push_back(line);
                 while self.scrollback.len() > self.max_scrollback {
                     self.scrollback.pop_front();
+                    dropped += 1;
                 }
             }
+            // Lines fell off the top of retained history: renumber the
+            // command blocks and evict the ones that scrolled out entirely.
+            self.shift_blocks(dropped);
             // The primary screen scrolled: advance the absolute line serial and
             // drop images that have fallen out of retained history.
             self.scrolled_off += count as i64;
@@ -952,8 +1063,15 @@ impl Terminal {
                     self.title_dirty = true;
                 }
             }
+            Some("7") => {
+                // The URL shouldn't contain ';', but rejoin defensively in
+                // case a percent-unencoded one does.
+                let url = params[1..].join(&b';');
+                self.osc_cwd(&url);
+            }
             Some("8") => self.osc_hyperlink(params),
             Some("4") => self.osc_palette(params),
+            Some("133") => self.osc_shell_mark(params),
             Some("10") => self.osc_dynamic_color(params, DynColor::Fg),
             Some("11") => self.osc_dynamic_color(params, DynColor::Bg),
             Some("12") => self.osc_dynamic_color(params, DynColor::Cursor),
@@ -970,6 +1088,83 @@ impl Terminal {
             }
             _ => {}
         }
+    }
+
+    /// OSC 133 ; A|B|C|D[;code] — shell-integration command marks
+    /// (FinalTerm / iTerm2 / kitty convention). Ignored on the alt screen.
+    fn osc_shell_mark(&mut self, params: &[&[u8]]) {
+        if self.alt_active {
+            return;
+        }
+        let abs = self.scrollback.len() + self.primary.cursor.y;
+        match params.get(1).map(|p| p.first().copied().unwrap_or(0)) {
+            // Prompt start: open a new block. A previous unfinished block is
+            // left as-is (done = false, exit unchanged).
+            Some(b'A') => {
+                if self.blocks.len() >= MAX_BLOCKS {
+                    self.blocks.remove(0);
+                }
+                self.blocks.push(Block {
+                    prompt_line: abs,
+                    cmd_line: abs,
+                    output_line: abs,
+                    end_line: abs,
+                    exit: None,
+                    done: false,
+                });
+                self.block_seen_c = false;
+            }
+            // Prompt end / command input start.
+            Some(b'B') => {
+                let seen_c = self.block_seen_c;
+                if let Some(b) = self.blocks.last_mut().filter(|b| !b.done) {
+                    b.cmd_line = abs;
+                    if !seen_c {
+                        b.output_line = abs;
+                    }
+                }
+            }
+            // Command executed: output starts here.
+            Some(b'C') => {
+                if let Some(b) = self.blocks.last_mut().filter(|b| !b.done) {
+                    b.output_line = abs;
+                    self.block_seen_c = true;
+                }
+            }
+            // Command finished; optional exit code.
+            Some(b'D') => {
+                let exit = params
+                    .get(2)
+                    .and_then(|p| std::str::from_utf8(p).ok())
+                    .and_then(|s| s.trim().parse::<i32>().ok());
+                if let Some(b) = self.blocks.last_mut().filter(|b| !b.done) {
+                    b.exit = exit;
+                    b.done = true;
+                    b.end_line = abs.max(b.output_line);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// OSC 7 ; file://host/path — report the working directory. Only the
+    /// percent-decoded path is kept; the host part is ignored. An empty
+    /// payload clears the cwd, other schemes are ignored.
+    fn osc_cwd(&mut self, url: &[u8]) {
+        if url.is_empty() {
+            self.cwd.clear();
+            return;
+        }
+        let Some(rest) = url.strip_prefix(b"file://") else {
+            return;
+        };
+        // Skip the authority (host) part: the path starts at the next '/'.
+        let path = match rest.iter().position(|&b| b == b'/') {
+            Some(i) => &rest[i..],
+            None => return, // "file://host" with no path at all
+        };
+        let decoded = percent_decode(path);
+        self.cwd = String::from_utf8_lossy(&decoded).into_owned();
     }
 
     /// OSC 4 ; index ; spec [ ; index ; spec … ] — set palette colors. A spec of
@@ -1143,6 +1338,10 @@ impl Terminal {
         self.kitty_pending = None;
         self.kitty_store.clear();
         self.scrolled_off = 0;
+        // RIS wipes the scrollback, so every tracked block is gone with it.
+        // The cwd is kept: the shell's directory is unaffected by a reset.
+        self.blocks.clear();
+        self.block_seen_c = false;
     }
 
     /// A monotonically increasing counter bumped whenever the dynamic palette
@@ -1841,6 +2040,33 @@ fn parse_ext_color(params: &Params, i: usize) -> Option<(Color, usize)> {
         }
         _ => None,
     }
+}
+
+/// Decode `%XX` percent-escapes in a URL byte string. Malformed escapes
+/// (truncated or non-hex) pass through verbatim.
+fn percent_decode(s: &[u8]) -> Vec<u8> {
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        if s[i] == b'%' && i + 2 < s.len() {
+            if let (Some(hi), Some(lo)) = (hex(s[i + 1]), hex(s[i + 2])) {
+                out.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(s[i]);
+        i += 1;
+    }
+    out
 }
 
 fn is_regional_indicator(c: char) -> bool {
