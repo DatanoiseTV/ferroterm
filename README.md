@@ -38,6 +38,11 @@ and captures input.
   single cell.
 - **Links**: OSC 8 hyperlinks *and* automatic URL detection, with hover-underline
   and click-to-open.
+- **Shell integration**: OSC 133 command marks (`A`/`B`/`C`/`D;exit`) are
+  tracked as command blocks — prompt / input / output / end lines in absolute
+  scrollback coordinates plus exit status, queryable via `Terminal::blocks()` —
+  and OSC 7 working-directory reports are percent-decoded and exposed via
+  `Terminal::cwd()`.
 - **Dynamic palette**: OSC 4 (palette entries), OSC 10/11/12 (default fg / bg /
   cursor) and OSC 104/110/111/112 (resets) are applied live, including `?`
   color-query replies.
@@ -338,9 +343,10 @@ The core tests assert against the *visible grid state* (what a renderer would
 draw), which is the strongest check for an emulator: printing/wrapping, cursor
 motion, erase/scroll regions, SGR (incl. true color), alt-screen isolation, wide
 chars, astral emoji, grapheme clusters (combining marks, ZWJ sequences, flags),
-OSC titles, OSC 8 links, Sixel / iTerm2 (OSC 1337) / Kitty (APC `_G`) image
-placement, DSR/DA replies, and a fuzz-style "malicious input must not panic/hang"
-case.
+OSC titles, OSC 8 links, OSC 133 command blocks (completion, exit codes,
+scrollback eviction), OSC 7 cwd decoding, Sixel / iTerm2 (OSC 1337) / Kitty
+(APC `_G`) image placement, DSR/DA replies, and a fuzz-style "malicious input
+must not panic/hang" case.
 
 The renderer tests (`web/test/`, `CHROME_BIN` overridable) render a feature-rich
 scene through **both** renderers in headless Chrome and assert semantic per-cell

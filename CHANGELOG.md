@@ -7,6 +7,19 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **OSC 133 shell-integration command marks** in `ferroterm-core`: `A` (prompt
+  start), `B` (input start), `C` (output start) and `D;<exit>` (finished) are
+  tracked as `Block` records — prompt / input / output / end lines in absolute
+  scrollback coordinates plus `exit: Option<i32>` and a `done` flag — exposed
+  via `Terminal::blocks()` (oldest first, capped at 2048). Blocks shift with
+  scrollback overflow and are evicted once their lines scroll out of retained
+  history; marks on the alternate screen are ignored; a column-changing resize
+  (which rewraps and renumbers all lines) discards them, row-only resizes keep
+  them. A running command's `end_line` follows the cursor until `D` arrives.
+- **OSC 7 working-directory reports** in `ferroterm-core`: `file://host/path`
+  URLs are percent-decoded (UTF-8, host ignored) and exposed via
+  `Terminal::cwd()`; an empty payload clears it, non-`file://` schemes are
+  ignored.
 - **`apps/slint` rasterizer benchmark** (`cargo run --release --example bench`):
   parse throughput, snapshot-decode cost and full-frame raster time (warm and
   cold glyph cache) across grid sizes. The `Image`-renderer path is fill-bound
